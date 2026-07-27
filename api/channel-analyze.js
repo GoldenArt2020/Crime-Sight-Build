@@ -1,210 +1,251 @@
+// api/channel-analyze.js
+// Analyzes a YouTube channel: pulls recent uploads, computes performance
+// stats, archetype, trigger words, and now — real day/hour publish-time
+// analysis bucketed from each video's actual publishedAt timestamp.
+// POST /api/channel-analyze
+// Body: { channelUrl: string }
+
 import { kv } from "./_lib/kv.js";
 
-const EMOTIONAL_TRIGGERS = [
-  "murder", "caught", "secret", "truth", "hidden", "final hours",
-  "warning signs", "never should have", "how", "inside", "cover-up",
-  "gang war", "wrong house", "institutional failure", "police failure",
-  "teacher", "baby", "mother", "child", "missing", "vanished",
-  "betrayal", "stalker", "obsession",
-];
-
-const ARCHETYPES = {
-  "Systemic Failure": ["police failure", "cover-up", "institutional failure", "warning signs"],
-  "Family / Victim-Focused": ["mother", "baby", "child", "teacher", "family"],
-  "Recent / Missing": ["missing", "vanished", "disappearance"],
-  "Predator / Stalker": ["stalker", "obsession", "betrayal", "caught"],
-};
-
-function extractHandleOrId(channelUrl) {
-  // Supports: youtube.com/@handle, youtube.com/channel/UC..., youtube.com/c/name, youtube.com/user/name, or bare @handle
-  const cleaned = channelUrl.trim();
-  const handleMatch = cleaned.match(/@([A-Za-z0-9_.-]+)/);
-  if (handleMatch) return { type: "handle", value: handleMatch[1] };
-
-  const channelIdMatch = cleaned.match(/channel\/(UC[A-Za-z0-9_-]{20,})/);
-  if (channelIdMatch) return { type: "id", value: channelIdMatch[1] };
-
-  const legacyMatch = cleaned.match(/\/(?:c|user)\/([A-Za-z0-9_.-]+)/);
-  if (legacyMatch) return { type: "username", value: legacyMatch[1] };
-
-  // Fallback: treat the whole string as a raw handle/username
-  return { type: "handle", value: cleaned.replace(/^@/, "") };
-}
-
-async function resolveChannel(apiKey, channelUrl) {
-  const ref = extractHandleOrId(channelUrl);
-  const base = "https://www.googleapis.com/youtube/v3/channels";
-  let url;
-
-  if (ref.type === "id") {
-    url = `${base}?part=snippet,statistics,contentDetails&id=${ref.value}&key=${apiKey}`;
-  } else if (ref.type === "handle") {
-    url = `${base}?part=snippet,statistics,contentDetails&forHandle=${encodeURIComponent(ref.value)}&key=${apiKey}`;
-  } else {
-    url = `${base}?part=snippet,statistics,contentDetails&forUsername=${encodeURIComponent(ref.value)}&key=${apiKey}`;
-  }
-
-  const res = await fetch(url);
-  const data = await res.json();
-
-  if (!data.items || !data.items.length) {
-    // Last-resort fallback: search.list by name and take the top channel result
-    const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(ref.value)}&maxResults=1&key=${apiKey}`;
-    const searchRes = await fetch(searchUrl);
-    const searchData = await searchRes.json();
-    const found = searchData.items?.[0]?.snippet?.channelId;
-    if (!found) throw new Error("Channel not found");
-
-    const retryUrl = `${base}?part=snippet,statistics,contentDetails&id=${found}&key=${apiKey}`;
-    const retryRes = await fetch(retryUrl);
-    const retryData = await retryRes.json();
-    if (!retryData.items?.length) throw new Error("Channel not found");
-    return retryData.items[0];
-  }
-
-  return data.items[0];
-}
-
-async function fetchRecentVideos(apiKey, uploadsPlaylistId, limit = 60) {
-  const items = [];
-  let pageToken = "";
-
-  while (items.length < limit) {
-    const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=50&pageToken=${pageToken}&key=${apiKey}`;
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data.items) break;
-    items.push(...data.items);
-    pageToken = data.nextPageToken || "";
-    if (!pageToken) break;
-  }
-
-  const videoIds = items.slice(0, limit).map((i) => i.contentDetails.videoId);
-  const stats = [];
-
-  for (let i = 0; i < videoIds.length; i += 50) {
-    const batch = videoIds.slice(i, i + 50);
-    const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${batch.join(",")}&key=${apiKey}`;
-    const statsRes = await fetch(statsUrl);
-    const statsData = await statsRes.json();
-    if (statsData.items) stats.push(...statsData.items);
-  }
-
-  return stats;
-}
-
-function analyzeVideos(videos) {
-  const now = Date.now();
-  const enriched = videos.map((v) => {
-    const publishedAt = new Date(v.snippet.publishedAt).getTime();
-    const ageDays = Math.max(1, (now - publishedAt) / (1000 * 60 * 60 * 24));
-    const views = Number(v.statistics.viewCount || 0);
-    const likes = Number(v.statistics.likeCount || 0);
-    const comments = Number(v.statistics.commentCount || 0);
-    const title = v.snippet.title || "";
-    const titleLower = title.toLowerCase();
-
-    const triggers = EMOTIONAL_TRIGGERS.filter((t) => titleLower.includes(t));
-
-    return {
-      title,
-      views,
-      viewsPerDay: views / ageDays,
-      engagementRate: views > 0 ? (likes + comments) / views : 0,
-      titleLength: title.length,
-      triggers,
-      publishedAt: v.snippet.publishedAt,
-    };
-  });
-
-  // Rank by viewsPerDay to find what's actually working, not just raw views
-  const ranked = [...enriched].sort((a, b) => b.viewsPerDay - a.viewsPerDay);
-  const topQuartile = ranked.slice(0, Math.max(1, Math.ceil(ranked.length * 0.25)));
-
-  const triggerCounts = {};
-  for (const v of topQuartile) {
-    for (const t of v.triggers) {
-      triggerCounts[t] = (triggerCounts[t] || 0) + 1;
-    }
-  }
-  const topTriggers = Object.entries(triggerCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([trigger, count]) => ({ trigger, count }));
-
-  const avgTitleLength = Math.round(
-    topQuartile.reduce((sum, v) => sum + v.titleLength, 0) / topQuartile.length
-  );
-
-  const avgEngagementRate =
-    enriched.reduce((sum, v) => sum + v.engagementRate, 0) / (enriched.length || 1);
-
-  // Score each archetype by how often its keywords appear in top-performing titles
-  let bestArchetype = "General True Crime";
-  let bestScore = 0;
-  for (const [archetype, keywords] of Object.entries(ARCHETYPES)) {
-    const score = topTriggers.reduce(
-      (sum, t) => sum + (keywords.includes(t.trigger) ? t.count : 0),
-      0
-    );
-    if (score > bestScore) {
-      bestScore = score;
-      bestArchetype = archetype;
-    }
-  }
-
-  const topVideo = ranked[0] || null;
-
-  return {
-    videosAnalyzed: enriched.length,
-    avgViewsPerDay: Math.round(
-      enriched.reduce((sum, v) => sum + v.viewsPerDay, 0) / (enriched.length || 1)
-    ),
-    avgEngagementRate: Number((avgEngagementRate * 100).toFixed(2)),
-    avgTitleLength,
-    topTriggers,
-    archetype: bestArchetype,
-    topVideo: topVideo
-      ? { title: topVideo.title, views: topVideo.views, viewsPerDay: Math.round(topVideo.viewsPerDay) }
-      : null,
-  };
-}
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "YOUTUBE_API_KEY is not set on the server" });
-  }
-
   const { channelUrl } = req.body || {};
-  if (!channelUrl) {
+  if (!channelUrl || !channelUrl.trim()) {
     return res.status(400).json({ error: "channelUrl is required" });
   }
 
   try {
-    const channel = await resolveChannel(apiKey, channelUrl);
-    const uploadsPlaylistId = channel.contentDetails.relatedPlaylists.uploads;
-    const videos = await fetchRecentVideos(apiKey, uploadsPlaylistId, 60);
-    const analysis = analyzeVideos(videos);
+    const channelId = await resolveChannelId(channelUrl.trim());
+    if (!channelId) {
+      return res.status(404).json({ error: "Could not resolve a channel from that URL" });
+    }
+
+    const channelMeta = await fetchChannelMeta(channelId);
+    const videos = await fetchRecentVideos(channelId, 50);
+
+    const stats = computeStats(videos);
+    const publishTiming = computePublishTiming(videos);
 
     const profile = {
-      channelId: channel.id,
-      channelTitle: channel.snippet.title,
-      subscriberCount: Number(channel.statistics.subscriberCount || 0),
-      videoCount: Number(channel.statistics.videoCount || 0),
+      channelId,
+      channelTitle: channelMeta.title,
+      subscriberCount: channelMeta.subscriberCount,
+      avgViewsPerDay: stats.avgViewsPerDay,
+      avgTitleLength: stats.avgTitleLength,
+      avgEngagementRate: stats.avgEngagementRate,
+      archetype: stats.archetype,
+      topTriggers: stats.topTriggers,
+      topVideo: stats.topVideo,
+      publishTiming, // { bestDay, bestHour, heatmap: [...], sampleSize }
       analyzedAt: new Date().toISOString(),
-      ...analysis,
     };
 
-    await kv.set(`channel:profile:${channel.id}`, profile);
-    await kv.set("channel:profile:latest", profile);
+    await kv.set(`channel:profile:${channelId}`, profile);
+    await kv.set(`channel:profile:latest`, profile); // so channel-matches.js can find the most recently connected channel
 
     return res.status(200).json(profile);
   } catch (err) {
-    return res.status(500).json({ error: err.message || "Channel analysis failed" });
+    console.error("channel-analyze error:", err);
+    return res.status(500).json({ error: "Failed to analyze channel", detail: err.message });
   }
+}
+
+// ---- Resolution ----
+
+async function resolveChannelId(input) {
+  // Handles @handle URLs, /channel/UC... URLs, or a raw handle/id
+  const handleMatch = input.match(/@([\w-]+)/);
+  const channelIdMatch = input.match(/channel\/(UC[\w-]+)/);
+
+  if (channelIdMatch) return channelIdMatch[1];
+
+  const handle = handleMatch ? handleMatch[1] : input.replace(/^@/, "");
+
+  const url = `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${YOUTUBE_API_KEY}`;
+  const resp = await fetch(url);
+  const data = await resp.json();
+  return data.items?.[0]?.id || null;
+}
+
+async function fetchChannelMeta(channelId) {
+  const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${channelId}&key=${YOUTUBE_API_KEY}`;
+  const resp = await fetch(url);
+  const data = await resp.json();
+  const item = data.items?.[0];
+  return {
+    title: item?.snippet?.title || "Unknown",
+    subscriberCount: Number(item?.statistics?.subscriberCount || 0),
+  };
+}
+
+async function fetchRecentVideos(channelId, max = 50) {
+  const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=id&channelId=${channelId}&order=date&maxResults=${max}&type=video&key=${YOUTUBE_API_KEY}`;
+  const searchResp = await fetch(searchUrl);
+  const searchData = await searchResp.json();
+  const ids = (searchData.items || []).map((i) => i.id.videoId).filter(Boolean);
+
+  if (ids.length === 0) return [];
+
+  const videosUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${ids.join(",")}&key=${YOUTUBE_API_KEY}`;
+  const videosResp = await fetch(videosUrl);
+  const videosData = await videosResp.json();
+  return videosData.items || [];
+}
+
+// ---- Stats ----
+
+function computeStats(videos) {
+  if (videos.length === 0) {
+    return {
+      avgViewsPerDay: 0,
+      avgTitleLength: 0,
+      avgEngagementRate: 0,
+      archetype: "unknown",
+      topTriggers: [],
+      topVideo: null,
+    };
+  }
+
+  const now = Date.now();
+  const enriched = videos.map((v) => {
+    const publishedAt = new Date(v.snippet.publishedAt).getTime();
+    const ageDays = Math.max(1, (now - publishedAt) / (1000 * 60 * 60 * 24));
+    const views = Number(v.statistics?.viewCount || 0);
+    const likes = Number(v.statistics?.likeCount || 0);
+    const comments = Number(v.statistics?.commentCount || 0);
+    const viewsPerDay = views / ageDays;
+    const engagementRate = views > 0 ? ((likes + comments) / views) * 100 : 0;
+    return {
+      title: v.snippet.title,
+      views,
+      viewsPerDay,
+      engagementRate,
+      publishedAt: v.snippet.publishedAt,
+    };
+  });
+
+  const avgViewsPerDay = average(enriched.map((v) => v.viewsPerDay));
+  const avgTitleLength = average(enriched.map((v) => v.title.length));
+  const avgEngagementRate = average(enriched.map((v) => v.engagementRate));
+
+  const topVideo = [...enriched].sort((a, b) => b.viewsPerDay - a.viewsPerDay)[0];
+
+  const topTriggers = extractTriggerWords(enriched.map((v) => v.title));
+  const archetype = inferArchetype(enriched.map((v) => v.title));
+
+  return {
+    avgViewsPerDay: Math.round(avgViewsPerDay),
+    avgTitleLength: Math.round(avgTitleLength),
+    avgEngagementRate: Number(avgEngagementRate.toFixed(2)),
+    archetype,
+    topTriggers,
+    topVideo: topVideo
+      ? { title: topVideo.title, viewsPerDay: Math.round(topVideo.viewsPerDay) }
+      : null,
+  };
+}
+
+// ---- Publish day/hour timing analysis ----
+
+function computePublishTiming(videos) {
+  if (videos.length === 0) {
+    return { bestDay: null, bestHour: null, heatmap: [], sampleSize: 0 };
+  }
+
+  // bucket[day][hour] = { totalViewsPerDay, count }
+  const buckets = Array.from({ length: 7 }, () =>
+    Array.from({ length: 24 }, () => ({ totalViewsPerDay: 0, count: 0 }))
+  );
+
+  const now = Date.now();
+
+  for (const v of videos) {
+    const published = new Date(v.snippet.publishedAt);
+    const day = published.getUTCDay(); // 0-6, Sunday-Saturday
+    const hour = published.getUTCHours(); // 0-23 UTC
+
+    const ageDays = Math.max(1, (now - published.getTime()) / (1000 * 60 * 60 * 24));
+    const views = Number(v.statistics?.viewCount || 0);
+    const viewsPerDay = views / ageDays;
+
+    buckets[day][hour].totalViewsPerDay += viewsPerDay;
+    buckets[day][hour].count += 1;
+  }
+
+  // Flatten into a heatmap of only buckets that actually have data,
+  // with an average viewsPerDay per (day, hour) combo.
+  const heatmap = [];
+  for (let day = 0; day < 7; day++) {
+    for (let hour = 0; hour < 24; hour++) {
+      const b = buckets[day][hour];
+      if (b.count > 0) {
+        heatmap.push({
+          day: DAY_NAMES[day],
+          hour,
+          avgViewsPerDay: Math.round(b.totalViewsPerDay / b.count),
+          uploadCount: b.count,
+        });
+      }
+    }
+  }
+
+  heatmap.sort((a, b) => b.avgViewsPerDay - a.avgViewsPerDay);
+
+  const best = heatmap[0] || null;
+
+  return {
+    bestDay: best?.day || null,
+    bestHour: best?.hour ?? null,
+    bestHourLabel: best ? formatHourUTC(best.hour) : null,
+    heatmap, // full breakdown, useful if you want a heatmap chart later
+    sampleSize: videos.length,
+    note: "Times are UTC, derived from publishedAt on this channel's own uploads — not a general audience benchmark.",
+  };
+}
+
+function formatHourUTC(hour) {
+  const period = hour >= 12 ? "PM" : "AM";
+  const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${displayHour}:00 ${period} UTC`;
+}
+
+// ---- Helpers ----
+
+function average(nums) {
+  if (nums.length === 0) return 0;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+function extractTriggerWords(titles) {
+  const triggerWords = [
+    "murder", "killer", "missing", "disappeared", "found", "confession",
+    "unsolved", "mystery", "evidence", "trial", "arrested", "victim",
+    "secret", "truth", "shocking", "twisted", "cover-up", "exposed",
+  ];
+  const counts = {};
+  for (const title of titles) {
+    const lower = title.toLowerCase();
+    for (const word of triggerWords) {
+      if (lower.includes(word)) counts[word] = (counts[word] || 0) + 1;
+    }
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([trigger, count]) => ({ trigger, count }));
+}
+
+function inferArchetype(titles) {
+  const joined = titles.join(" ").toLowerCase();
+  if (/(unsolved|cold case|disappeared|missing)/.test(joined)) return "Unsolved Mystery Specialist";
+  if (/(trial|confession|arrested|sentenced)/.test(joined)) return "Courtroom & Justice Focused";
+  if (/(serial|killer|murder)/.test(joined)) return "Serial Crime Deep-Diver";
+  return "General True Crime";
 }

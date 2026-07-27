@@ -1,0 +1,262 @@
+import { useEffect, useState } from "react";
+import { Search, RefreshCw, Loader2, Bookmark, BookmarkCheck, TrendingUp } from "lucide-react";
+
+const CASE_TYPES = ["All Types", "Missing Persons", "Unsolved", "Cold Case", "Trial", "Recently Solved"];
+const SORT_OPTIONS = [
+  { value: "viral", label: "Viral Potential" },
+  { value: "recent", label: "Most Recent" },
+  { value: "competition", label: "Lowest Competition" },
+];
+
+function Gauge({ label, value, invert = false }) {
+  // invert=true means lower is "better" (e.g. competition)
+  const good = invert ? value <= 33 : value >= 67;
+  const mid = invert ? value > 33 && value <= 66 : value >= 34 && value < 67;
+  const color = good ? "text-cyan-400" : mid ? "text-amber-300" : "text-pink-400";
+  return (
+    <div>
+      <p className="text-[10px] uppercase text-white/40">{label}</p>
+      <p className={`text-sm font-semibold ${color}`}>{value}/100</p>
+    </div>
+  );
+}
+
+function CaseCard({ item, isSaved, onToggleSave, savingId }) {
+  const viral = item.viral_score?.overall ?? 0;
+  const competition = item.viral_score?.competition ?? 0;
+  const outrage = item.viral_score?.public_outrage ?? 0;
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 flex flex-col gap-3 hover:border-cyan-400/30 transition-colors">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-white font-medium leading-tight">{item.name}</h4>
+          <p className="text-xs text-white/40 mt-0.5">
+            {item.location} {item.date ? `· ${item.date}` : ""}
+          </p>
+        </div>
+        <button
+          onClick={() => onToggleSave(item)}
+          disabled={savingId === item.id}
+          className="shrink-0 text-white/40 hover:text-cyan-400 transition-colors"
+          title={isSaved ? "Remove from shortlist" : "Save to shortlist"}
+        >
+          {savingId === item.id ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : isSaved ? (
+            <BookmarkCheck size={16} className="text-cyan-400" />
+          ) : (
+            <Bookmark size={16} />
+          )}
+        </button>
+      </div>
+
+      <p className="text-xs text-white/60 leading-relaxed line-clamp-3">{item.summary}</p>
+
+      <span className="self-start text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-white/10 text-white/50">
+        {item.case_status}
+      </span>
+
+      <div className="grid grid-cols-3 gap-2 pt-1 border-t border-white/10">
+        <Gauge label="Viral" value={viral} />
+        <Gauge label="Competition" value={competition} invert />
+        <Gauge label="Outrage" value={outrage} />
+      </div>
+
+      <div className="flex gap-2 text-[11px] text-white/40 pt-1">
+        <span>{item.youtube_coverage?.video_count ?? 0} YT videos</span>
+        <span>·</span>
+        <span>{item.social_signal?.mention_count ?? 0} social mentions</span>
+      </div>
+
+      <button
+        onClick={() => (window.location.href = `/case-intelligence?id=${item.id}`)}
+        className="mt-1 text-xs font-medium bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white rounded-lg py-1.5 hover:opacity-90 transition-opacity"
+      >
+        Open Case Intelligence
+      </button>
+    </div>
+  );
+}
+
+export default function DiscoverCases() {
+  const [query, setQuery] = useState("");
+  const [caseType, setCaseType] = useState(CASE_TYPES[0]);
+  const [sortBy, setSortBy] = useState(SORT_OPTIONS[0].value);
+  const [cases, setCases] = useState([]);
+  const [savedIds, setSavedIds] = useState(new Set());
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [savingId, setSavingId] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    loadCached();
+    loadSaved();
+  }, []);
+
+  async function loadCached() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/trending-cases");
+      const data = await res.json();
+      setCases(data.cases || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadSaved() {
+    try {
+      const res = await fetch("/api/trending-cases?saved=true");
+      const data = await res.json();
+      setSavedIds(new Set((data.cases || []).map((c) => c.id)));
+    } catch {
+      // non-fatal
+    }
+  }
+
+  async function runFreshScan() {
+    setScanning(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/trending-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ focus: query.trim() || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Scan failed");
+      setCases(data.cases || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function toggleSave(item) {
+    setSavingId(item.id);
+    try {
+      if (savedIds.has(item.id)) {
+        await fetch("/api/trending-cases", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: item.id }),
+        });
+        setSavedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(item.id);
+          return next;
+        });
+      } else {
+        await fetch("/api/trending-cases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ caseData: item }),
+        });
+        setSavedIds((prev) => new Set(prev).add(item.id));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  const filtered = cases
+    .filter((c) => {
+      if (!query.trim()) return true;
+      const q = query.toLowerCase();
+      return c.name.toLowerCase().includes(q) || (c.location || "").toLowerCase().includes(q);
+    })
+    .filter((c) => {
+      if (caseType === "All Types") return true;
+      const status = (c.case_status || "").toLowerCase();
+      if (caseType === "Missing Persons") return status.includes("missing");
+      if (caseType === "Unsolved") return status.includes("unsolved") || status.includes("investigation");
+      if (caseType === "Cold Case") return status.includes("cold");
+      if (caseType === "Trial") return status.includes("trial") || status.includes("arraign");
+      if (caseType === "Recently Solved") return status.includes("convict") || status.includes("sentenc");
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === "viral") return (b.viral_score?.overall ?? 0) - (a.viral_score?.overall ?? 0);
+      if (sortBy === "competition") return (a.viral_score?.competition ?? 0) - (b.viral_score?.competition ?? 0);
+      if (sortBy === "recent") return new Date(b.date || 0) - new Date(a.date || 0);
+      return 0;
+    });
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-white p-8 space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold">Discover Cases: Uncovering the Untold</h1>
+        <p className="text-white/40 text-sm mt-1">A premium true crime content intelligence platform</p>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 flex flex-col sm:flex-row gap-3 flex-wrap">
+        <div className="flex-1 min-w-[220px] flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
+          <Search size={16} className="text-white/40" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && runFreshScan()}
+            placeholder="Search for a case, or type a focus (e.g. UK true crime) and run a new scan"
+            className="bg-transparent outline-none flex-1 text-sm placeholder:text-white/30"
+          />
+        </div>
+        <select
+          value={caseType}
+          onChange={(e) => setCaseType(e.target.value)}
+          className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm"
+        >
+          {CASE_TYPES.map((t) => <option key={t}>{t}</option>)}
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm"
+        >
+          {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <button
+          onClick={runFreshScan}
+          disabled={scanning}
+          className="px-5 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+        >
+          {scanning ? <><Loader2 size={14} className="animate-spin" /> Scanning...</> : <><RefreshCw size={14} /> Run New Scan</>}
+        </button>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-white/40 text-sm">
+          <Loader2 size={14} className="animate-spin" /> Loading cached scan...
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center text-white/30 text-sm py-16 flex flex-col items-center gap-2">
+          <TrendingUp size={24} />
+          No cases yet — run a scan above to discover trending true crime cases.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {filtered.map((item) => (
+            <CaseCard
+              key={item.id}
+              item={item}
+              isSaved={savedIds.has(item.id)}
+              onToggleSave={toggleSave}
+              savingId={savingId}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
