@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link2, Loader2, Sparkles, TrendingUp, RefreshCw, Wand2, Search } from "lucide-react";
+import { Link2, Loader2, Sparkles, TrendingUp, RefreshCw, Wand2, Search, Copy, Check } from "lucide-react";
 
 function FitGauge({ score }) {
   const radius = 28;
@@ -39,6 +39,44 @@ function FitGauge({ score }) {
   );
 }
 
+function ChannelIdBadge({ channelId }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(channelId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      // Clipboard API can fail in some environments (e.g. insecure context) —
+      // fail silently rather than throwing, the ID is still visible to select manually.
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/5 p-3 flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-[10px] uppercase tracking-wide text-cyan-300/70">Channel ID</p>
+        <p className="text-sm font-mono text-cyan-300 truncate">{channelId}</p>
+      </div>
+      <button
+        onClick={handleCopy}
+        className="shrink-0 flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg border border-cyan-400/20 text-cyan-300 hover:bg-cyan-400/10 transition-colors"
+      >
+        {copied ? (
+          <>
+            <Check size={12} /> Copied
+          </>
+        ) : (
+          <>
+            <Copy size={12} /> Copy
+          </>
+        )}
+      </button>
+    </div>
+  );
+}
+
 function CaseCard({ item, channelId, onAnglesGenerated }) {
   const isEnriched = Boolean(item.recommended_angle);
   const [generating, setGenerating] = useState(false);
@@ -53,20 +91,12 @@ function CaseCard({ item, channelId, onAnglesGenerated }) {
     setLocalError(null);
     setGenerating(true);
     try {
-      // Make sure the case has been researched first (populates case:detail:<id>
-      // in KV) — otherwise angle-generator 404s if "Start Research" was never clicked.
-      const detailParams = new URLSearchParams();
-      if (item.id) detailParams.set("id", item.id);
-      if (item.name) detailParams.set("name", item.name);
-      const detailRes = await fetch(`/api/case-detail?${detailParams.toString()}`);
-      const detailData = await detailRes.json();
-      if (!detailRes.ok) throw new Error(detailData.error || "Failed to research case");
-
       const res = await fetch("/api/angle-generator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          caseId: detailData.id,
+          caseId: item.id,
+          caseName: item.id ? undefined : item.name,
           channelId,
         }),
       });
@@ -84,15 +114,11 @@ function CaseCard({ item, channelId, onAnglesGenerated }) {
     setLocalError(null);
     setResearching(true);
     try {
-      const params = new URLSearchParams();
-      if (item.id) params.set("id", item.id);
-      if (item.name) params.set("name", item.name);
-
-      const res = await fetch(`/api/case-detail?${params.toString()}`);
+      const params = item.id ? `id=${encodeURIComponent(item.id)}` : `name=${encodeURIComponent(item.name)}`;
+      const res = await fetch(`/api/case-detail?${params}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to research case");
-      // Detail is now cached in KV under case:detail:<id> — surfaced via Case Intelligence page.
-      window.location.href = `/case-intelligence?id=${encodeURIComponent(data.id)}&name=${encodeURIComponent(data.name)}`;
+      window.location.href = `/case-intelligence?id=${data.id}`;
     } catch (err) {
       setLocalError(err.message);
     } finally {
@@ -241,7 +267,7 @@ export default function ChannelMatchmaker() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to analyze channel");
-      setProfile(data); // includes data.channelId, used by CaseCard for Generate Angle
+      setProfile(data); // includes data.channelId — the real resolved UC... ID
       await fetchMatches();
     } catch (err) {
       setError(err.message);
@@ -279,6 +305,7 @@ export default function ChannelMatchmaker() {
         </p>
       </div>
 
+      {/* Connect bar */}
       <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
         <div className="flex-1 flex items-center gap-2 bg-black/30 border border-white/10 rounded-lg px-3 py-2">
           <Link2 size={16} className="text-white/40" />
@@ -311,6 +338,10 @@ export default function ChannelMatchmaker() {
         </div>
       )}
 
+      {/* Channel ID — copyable, needed to use SEO Studio, Thumbnail Studio, Competition Analyzer */}
+      {profile?.channelId && <ChannelIdBadge channelId={profile.channelId} />}
+
+      {/* Channel profile summary */}
       {profile && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -338,6 +369,7 @@ export default function ChannelMatchmaker() {
         </div>
       )}
 
+      {/* Active angle results, shown when "Generate Angle" was clicked on a card */}
       {activeAngles && (
         <AnglesPanel
           caseName={activeAngles.caseName}
@@ -346,6 +378,7 @@ export default function ChannelMatchmaker() {
         />
       )}
 
+      {/* Recommendations */}
       {(matches.length > 0 || loadingMatches) && (
         <div>
           <div className="flex items-center justify-between mb-3">
