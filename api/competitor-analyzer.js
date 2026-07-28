@@ -15,14 +15,19 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { channelId, competitorUrls } = req.body || {};
+  const { channelId: rawChannelId, competitorUrls } = req.body || {};
 
-  if (!channelId) {
+  if (!rawChannelId) {
     return res.status(400).json({ error: "channelId is required (use profile.channelId from /api/channel-analyze)" });
   }
   if (!Array.isArray(competitorUrls) || competitorUrls.length === 0) {
     return res.status(400).json({ error: "competitorUrls must be a non-empty array" });
   }
+
+  // Accept a full channel URL, an @handle, or a bare UC... id here — normalize
+  // to the bare id so this matches the key channel-analyze.js actually stored
+  // the profile under (it always strips URLs down to the bare channel id).
+  const channelId = normalizeChannelId(rawChannelId.trim());
 
   try {
     const myProfile = await kv.get(`channel:profile:${channelId}`);
@@ -146,6 +151,17 @@ Return JSON in this exact shape:
 }
 
 // ---- Shared helpers (same logic as channel-analyze.js) ----
+
+// Synchronous, no API call: strips a full channel URL down to the bare
+// UC... id. If it's already a bare id, returns it unchanged. Only an
+// @handle (with no id anywhere) falls through unresolved — see the async
+// resolveChannelId() below for that case (used for competitor URLs, which
+// are frequently handles).
+function normalizeChannelId(input) {
+  const channelIdMatch = input.match(/(UC[\w-]{20,})/);
+  if (channelIdMatch) return channelIdMatch[1];
+  return input;
+}
 
 async function resolveChannelId(input) {
   const channelIdMatch = input.match(/channel\/(UC[\w-]+)/);
