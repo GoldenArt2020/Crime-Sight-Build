@@ -1,15 +1,15 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Sidebar from "./components/Sidebar";
+import Sidebar from "../components/Sidebar";
 
-import Dashboard from "./pages/Dashboard";
-import DiscoverCases from "./pages/DiscoverCases";
-import CaseIntelligence from "./pages/CaseIntelligence";
-import AngleGenerator from "./pages/AngleGenerator";
-import SeoStudio from "./pages/SeoStudio";
-import ThumbnailStudio from "./pages/ThumbnailStudio";
-import CompetitionAnalyzer from "./pages/CompetitionAnalyzer";
-import ChannelMatchmaker from "./pages/ChannelMatchmaker";
-import PublishingCenter from "./pages/PublishingCenter";
+import Dashboard from "./Dashboard";
+import DiscoverCases from "./DiscoverCases";
+import CaseIntelligence from "./CaseIntelligence";
+import AngleGenerator from "./AngleGenerator";
+import SeoStudio from "./SeoStudio";
+import ThumbnailStudio from "./ThumbnailStudio";
+import CompetitionAnalyzer from "./CompetitionAnalyzer";
+import ChannelMatchmaker from "./ChannelMatchmaker";
+import PublishingCenter from "./PublishingCenter";
 
 export default function App() {
   return (
