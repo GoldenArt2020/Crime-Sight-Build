@@ -1,9 +1,23 @@
 import { useState } from "react";
-import { Loader2, Search } from "lucide-react";
+import { Loader2, Search, CheckCircle2, AlertTriangle, XCircle, Clock } from "lucide-react";
+
+const STATUS_ICON = {
+  pass: <CheckCircle2 size={14} className="text-cyan-400 shrink-0" />,
+  warn: <AlertTriangle size={14} className="text-amber-300 shrink-0" />,
+  fail: <XCircle size={14} className="text-pink-400 shrink-0" />,
+};
+
+const RELEVANCE_STYLE = {
+  high: "bg-cyan-500/15 text-cyan-300 border border-cyan-400/20",
+  medium: "bg-white/10 text-white/70 border border-white/10",
+  low: "bg-white/5 text-white/40 border border-white/5",
+};
 
 export default function SeoStudio() {
   const [title, setTitle] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [caseName, setCaseName] = useState("");
+  const [script, setScript] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -16,7 +30,12 @@ export default function SeoStudio() {
       const res = await fetch("/api/seo-score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, channelId }),
+        body: JSON.stringify({
+          title,
+          channelId,
+          caseName: caseName.trim() || undefined,
+          script: script.trim() || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to score title");
@@ -52,6 +71,26 @@ export default function SeoStudio() {
           placeholder="Proposed video title"
           className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
         />
+        <input
+          value={caseName}
+          onChange={(e) => setCaseName(e.target.value)}
+          placeholder="Case name (optional, improves accuracy)"
+          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+        />
+        <div>
+          <textarea
+            value={script}
+            onChange={(e) => setScript(e.target.value)}
+            placeholder="Paste your script here (optional) — grounds the description, tags, and category recommendation in the actual video content instead of just the title"
+            rows={6}
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30 resize-y"
+          />
+          <p className="text-xs text-white/30 mt-1">
+            {script.length > 0
+              ? `${script.length.toLocaleString()} characters`
+              : "Without a script, description and tags are generated from the title alone and will be more generic."}
+          </p>
+        </div>
         <button
           onClick={handleScore}
           disabled={loading}
@@ -106,9 +145,19 @@ export default function SeoStudio() {
           )}
 
           {result.description?.suggested && (
-            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-              <h3 className="text-xs uppercase text-white/40 mb-2">Suggested Description</h3>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
+              <h3 className="text-xs uppercase text-white/40">Suggested Description</h3>
               <p className="text-sm text-white/70">{result.description.suggested}</p>
+              {result.description.checkpoints?.length > 0 && (
+                <div className="space-y-1.5 pt-2 border-t border-white/10">
+                  {result.description.checkpoints.map((c, i) => (
+                    <div key={i} className="flex items-center gap-2 text-sm text-white/70">
+                      {STATUS_ICON[c.status] || null}
+                      <span>{c.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -117,11 +166,37 @@ export default function SeoStudio() {
               <h3 className="text-xs uppercase text-white/40 mb-2">Tags</h3>
               <div className="flex flex-wrap gap-2">
                 {result.tags.map((t, i) => (
-                  <span key={i} className="text-xs px-2 py-1 rounded-full bg-white/10 text-white/70">
+                  <span
+                    key={i}
+                    className={`text-xs px-2 py-1 rounded-full ${RELEVANCE_STYLE[t.relevance] || RELEVANCE_STYLE.medium}`}
+                    title={`${t.relevance || "medium"} relevance`}
+                  >
                     {t.tag}
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+
+          {(result.categoryRecommendation || result.publishingOptimizer) && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {result.categoryRecommendation && (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <h3 className="text-xs uppercase text-white/40 mb-2">Best YouTube Category</h3>
+                  <p className="text-sm font-semibold text-fuchsia-300">{result.categoryRecommendation.category}</p>
+                  <p className="text-xs text-white/50 mt-1">{result.categoryRecommendation.reasoning}</p>
+                </div>
+              )}
+
+              {result.publishingOptimizer && (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <h3 className="text-xs uppercase text-white/40 mb-2 flex items-center gap-1.5">
+                    <Clock size={12} /> Optimal Upload Time
+                  </h3>
+                  <p className="text-sm font-semibold text-cyan-300">{result.publishingOptimizer.optimalUploadTime}</p>
+                  <p className="text-xs text-white/40 mt-1">{result.publishingOptimizer.basis}</p>
+                </div>
+              )}
             </div>
           )}
         </div>
