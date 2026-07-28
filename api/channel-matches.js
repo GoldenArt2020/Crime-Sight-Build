@@ -85,22 +85,26 @@ export default async function handler(req, res) {
     const topN = scored.slice(0, 6);
     const rest = scored.slice(6);
 
-    const enrichedTop = [];
-    for (const item of topN) {
-      let angle = { why_it_matches: "Matches your channel's proven archetype.", recommended_angle: `The story behind ${item.case.name}` };
-      if (groqKey) {
-        angle = await generateAngle(groqKey, channelProfile, item.case, item.matchedTriggers);
-      }
-      enrichedTop.push({
-        id: item.case.id || item.case.name,
-        name: item.case.name,
-        location: item.case.location,
-        date: item.case.date,
-        fitScore: item.fitScore,
-        coverage: item.case.coverage,
-        ...angle,
-      });
-    }
+    const enrichedTop = await Promise.all(
+      topN.map(async (item) => {
+        let angle = {
+          why_it_matches: "Matches your channel's proven archetype.",
+          recommended_angle: `The story behind ${item.case.name}`,
+        };
+        if (groqKey) {
+          angle = await generateAngle(groqKey, channelProfile, item.case, item.matchedTriggers);
+        }
+        return {
+          id: item.case.id || item.case.name,
+          name: item.case.name,
+          location: item.case.location,
+          date: item.case.date,
+          fitScore: item.fitScore,
+          coverage: item.case.coverage,
+          ...angle,
+        };
+      })
+    );
 
     const restMinimal = rest.map((item) => ({
       id: item.case.id || item.case.name,
