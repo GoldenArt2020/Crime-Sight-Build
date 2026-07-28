@@ -1,13 +1,15 @@
 // api/competitor-analyzer.js
-// Competition Analyzer — compares your channel's profile against one or
-// more competitor channels: title patterns, upload frequency, content gaps.
-// POST /api/competitor-analyzer
-// Body: { channelId: string, competitorUrls: string[] }
+// Two modes:
+//  1) mode: "caseType" — { caseType, caseName? } — finds top-performing
+//     YouTube videos for a given true-crime case type and extracts patterns.
+//  2) default/legacy — { channelId, competitorUrls } — compares your
+//     channel's profile against named competitor channels.
 
 import { kv } from "./_lib/kv.js";
 import { groqComplete, extractJson } from "./_lib/groq.js";
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+const CASE_TYPE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -15,7 +17,168 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { channelId: rawChannelId, competitorUrls } = req.body || {};
+  const body = req.body || {};
+
+  if (body.mode === "caseType" || (body.caseType && !body.channelId)) {
+    return handleCaseTypeMode(req, res, body);
+  }
+
+  return handleChannelMode(req, res, body);
+}
+
+// ============================================================
+// MODE 1: case-type competitor scan
+// ============================================================
+
+async function handleCaseTypeMode(req, res, body) {
+  const caseType = (body.caseType || "").trim();
+  const caseName = (body.caseName || "").trim();
+
+  if (!caseType) {
+    return res.status(400).json({ error: "caseType is required" });
+  }
+
+  const cacheKey = `competitor:caseType:${caseType.toLowerCase()}`;
+
+  try {
+    const cached = await kv.get(cacheKey);
+    if (cached && Date.now() - new Date(cached.generatedAt).getTime() < CASE_TYPE_CACHE_TTL_MS) {
+      return res.status(200).json({ ...cached, cached: true });
+    }
+
+    const query = caseName ? `${caseName} ${caseType} true crime` : `${caseType} true crime`;
+    const videos = await searchTopVideos(query, 25);
+
+    if (videos.length === 0) {
+      const empty = {
+        caseType,
+        cached: false,
+        videoCount: 0,
+        message: "No videos found for this case type. Try a broader or differently worded case type.",
+        generatedAt: new Date().toISOString(),
+      };
+      await kv.set(cacheKey, empty);
+      return res.status(200).json(empty);
+    }
+
+    const stats = {
+      avgViews: Math.round(average(videos.map((v) => v.viewCount))),
+      avgTitleLength: Math.round(average(videos.map((v) => v.title.length))),
+      avgDurationMinutes: Math.round(average(videos.map((v) => v.durationSeconds)) / 60),
+    };
+
+    const uniqueChannels = new Set(videos.map((v) => v.channelTitle)).size;
+
+    const topVideos = [...videos]
+      .sort((a, b) => b.viewCount - a.viewCount)
+      .slice(0, 10)
+      .map((v) => ({
+        id: v.id,
+        url: `https://www.youtube.com/watch?v=${v.id}`,
+        title: v.title,
+        channelTitle: v.channelTitle,
+        viewCount: v.viewCount,
+      }));
+
+    const patterns = await synthesizeCaseTypePatterns({ caseType, videos });
+
+    const result = {
+      caseType,
+      cached: false,
+      videoCount: videos.length,
+      uniqueChannels,
+      stats,
+      patterns,
+      topVideos,
+      generatedAt: new Date().toISOString(),
+    };
+
+    await kv.set(cacheKey, result);
+    return res.status(200).json(result);
+  } catch (err) {
+    console.error("competitor-analyzer (caseType mode) error:", err);
+    return res.status(500).json({ error: "Failed to scan competitors", detail: err.message });
+  }
+}
+
+async function synthesizeCaseTypePatterns({ caseType, videos }) {
+  const systemPrompt = `You are a YouTube growth strategist for true crime creators. Given real top-performing video titles for a case type, extract concrete, specific patterns — not generic advice. Respond with ONLY a JSON object, no markdown, no commentary.`;
+
+  const titleList = videos.slice(0, 25).map((v) => `- "${v.title}" (${v.viewCount.toLocaleString()} views, ${v.channelTitle})`).join("\n");
+
+  const userPrompt = `
+CASE TYPE: ${caseType}
+
+TOP-PERFORMING VIDEO TITLES:
+${titleList}
+
+TASK:
+Analyze these real titles and extract patterns a creator could apply to their own video on this case type.
+
+Return JSON in this exact shape:
+{
+  "titleStructurePatterns": [
+    { "pattern": "short name for the pattern", "example": "one real title from the list that demonstrates it" }
+  ],
+  "commonHooks": ["short hook phrase", "short hook phrase"],
+  "lengthGuidance": "1 sentence on ideal title length based on what's shown here",
+  "recommendation": "2-3 sentences of specific, actionable advice for a title on this exact case type"
+}
+`.trim();
+
+  const raw = await groqComplete({
+    apiKey: process.env.GROQ_API_KEY,
+    systemPrompt,
+    userPrompt,
+  });
+
+  const parsed = extractJson(raw);
+  if (!parsed) {
+    const snippet = (raw || "(empty response)").slice(0, 800);
+    throw new Error(`Groq returned an unparseable patterns result. Raw response (truncated): ${snippet}`);
+  }
+  return parsed;
+}
+
+async function searchTopVideos(query, max = 25) {
+  const searchUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(query)}&type=video&order=viewCount&maxResults=${max}&key=${YOUTUBE_API_KEY}`;
+  const searchResp = await fetch(searchUrl);
+  const searchData = await searchResp.json();
+  const items = searchData.items || [];
+  const ids = items.map((i) => i.id?.videoId).filter(Boolean);
+  if (ids.length === 0) return [];
+
+  const videosUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${ids.join(",")}&key=${YOUTUBE_API_KEY}`;
+  const videosResp = await fetch(videosUrl);
+  const videosData = await videosResp.json();
+
+  return (videosData.items || []).map((v) => ({
+    id: v.id,
+    title: v.snippet.title,
+    channelTitle: v.snippet.channelTitle,
+    viewCount: Number(v.statistics?.viewCount || 0),
+    durationSeconds: parseISODuration(v.contentDetails?.duration),
+  }));
+}
+
+function parseISODuration(iso) {
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(iso || "");
+  if (!match) return 0;
+  const [, h, m, s] = match;
+  return (Number(h) || 0) * 3600 + (Number(m) || 0) * 60 + (Number(s) || 0);
+}
+
+function average(nums) {
+  if (nums.length === 0) return 0;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+// ============================================================
+// MODE 2: channel-vs-channel comparison (legacy/original behavior)
+// ============================================================
+
+async function handleChannelMode(req, res, body) {
+  const { channelId: rawChannelId, competitorUrls } = body;
 
   if (!rawChannelId) {
     return res.status(400).json({ error: "channelId is required (use profile.channelId from /api/channel-analyze)" });
@@ -24,9 +187,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "competitorUrls must be a non-empty array" });
   }
 
-  // Accept a full channel URL, an @handle, or a bare UC... id here — normalize
-  // to the bare id so this matches the key channel-analyze.js actually stored
-  // the profile under (it always strips URLs down to the bare channel id).
   const channelId = normalizeChannelId(rawChannelId.trim());
 
   try {
@@ -64,12 +224,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json(result);
   } catch (err) {
-    console.error("competitor-analyzer error:", err);
+    console.error("competitor-analyzer (channel mode) error:", err);
     return res.status(500).json({ error: "Failed to analyze competitors", detail: err.message });
   }
 }
-
-// ---- Lightweight version of channel-analyze's pipeline, scoped to what comparison needs ----
 
 async function analyzeCompetitor(channelUrl) {
   const channelId = await resolveChannelId(channelUrl);
@@ -151,13 +309,6 @@ Return JSON in this exact shape:
   return parsed;
 }
 
-// ---- Shared helpers (same logic as channel-analyze.js) ----
-
-// Synchronous, no API call: strips a full channel URL down to the bare
-// UC... id. If it's already a bare id, returns it unchanged. Only an
-// @handle (with no id anywhere) falls through unresolved — see the async
-// resolveChannelId() below for that case (used for competitor URLs, which
-// are frequently handles).
 function normalizeChannelId(input) {
   const channelIdMatch = input.match(/(UC[\w-]{20,})/);
   if (channelIdMatch) return channelIdMatch[1];
@@ -199,11 +350,6 @@ async function fetchRecentVideos(channelId, max = 25) {
   const videosResp = await fetch(videosUrl);
   const videosData = await videosResp.json();
   return videosData.items || [];
-}
-
-function average(nums) {
-  if (nums.length === 0) return 0;
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
 function extractTriggerWords(titles) {
