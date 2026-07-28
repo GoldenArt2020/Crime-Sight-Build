@@ -1,8 +1,19 @@
 // api/competitor-analyzer.js
-// Competition Analyzer — compares your channel's profile against one or
-// more competitor channels: title patterns, upload frequency, content gaps.
-// POST /api/competitor-analyzer
-// Body: { channelId: string, competitorUrls: string[] }
+//
+// Two modes, selected via body.mode:
+//
+// 1. mode: "compare" (default) — Competition Analyzer: compares your
+//    channel's profile against one or more NAMED competitor channels
+//    (title patterns, upload frequency, content gaps).
+//    Body: { channelId: string, competitorUrls: string[] }
+//
+// 2. mode: "caseType" — Competitor Scan: discovers top-performing videos
+//    for a CASE TYPE via YouTube search (no channels named up front),
+//    and extracts title/tag/pattern data across whatever ranks highest.
+//    Body: { mode: "caseType", caseType: string, caseName?: string, maxPerQuery?: number }
+//
+// Merged into one file (from two separate endpoints) to stay under the
+// 12-serverless-function limit on Vercel's Hobby plan — see project notes.
 
 import { kv } from "./_lib/kv.js";
 import { groqComplete, extractJson } from "./_lib/groq.js";
@@ -15,7 +26,21 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { channelId: rawChannelId, competitorUrls } = req.body || {};
+  const body = req.body || {};
+
+  if (body.mode === "caseType") {
+    return handleCaseTypeScan(req, res, body);
+  }
+
+  return handleCompare(req, res, body);
+}
+
+// =====================================================================
+// MODE 1: compare — unchanged from the original competitor-analyzer.js
+// =====================================================================
+
+async function handleCompare(req, res, body) {
+  const { channelId: rawChannelId, competitorUrls } = body;
 
   if (!rawChannelId) {
     return res.status(400).json({ error: "channelId is required (use profile.channelId from /api/channel-analyze)" });
@@ -24,9 +49,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "competitorUrls must be a non-empty array" });
   }
 
-  // Accept a full channel URL, an @handle, or a bare UC... id here — normalize
-  // to the bare id so this matches the key channel-analyze.js actually stored
-  // the profile under (it always strips URLs down to the bare channel id).
   const channelId = normalizeChannelId(rawChannelId.trim());
 
   try {
@@ -64,12 +86,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json(result);
   } catch (err) {
-    console.error("competitor-analyzer error:", err);
+    console.error("competitor-analyzer (compare) error:", err);
     return res.status(500).json({ error: "Failed to analyze competitors", detail: err.message });
   }
 }
-
-// ---- Lightweight version of channel-analyze's pipeline, scoped to what comparison needs ----
 
 async function analyzeCompetitor(channelUrl) {
   const channelId = await resolveChannelId(channelUrl);
@@ -137,7 +157,7 @@ Return JSON in this exact shape:
 }
 `.trim();
 
-  const raw = await groqComplete({
+  const raw = await groqCompleteWithRetry({
     apiKey: process.env.GROQ_API_KEY,
     systemPrompt,
     userPrompt,
@@ -145,18 +165,14 @@ Return JSON in this exact shape:
 
   const parsed = extractJson(raw);
   if (!parsed || !parsed.positioning) {
-    throw new Error("Groq returned an unparseable comparison result");
+    const snippet = (raw || "(empty response)").slice(0, 800);
+    throw new Error(`Groq returned an unparseable comparison result. Raw response (truncated): ${snippet}`);
   }
   return parsed;
 }
 
-// ---- Shared helpers (same logic as channel-analyze.js) ----
+// ---- Shared YouTube/profile helpers for compare mode ----
 
-// Synchronous, no API call: strips a full channel URL down to the bare
-// UC... id. If it's already a bare id, returns it unchanged. Only an
-// @handle (with no id anywhere) falls through unresolved — see the async
-// resolveChannelId() below for that case (used for competitor URLs, which
-// are frequently handles).
 function normalizeChannelId(input) {
   const channelIdMatch = input.match(/(UC[\w-]{20,})/);
   if (channelIdMatch) return channelIdMatch[1];
@@ -200,11 +216,6 @@ async function fetchRecentVideos(channelId, max = 25) {
   return videosData.items || [];
 }
 
-function average(nums) {
-  if (nums.length === 0) return 0;
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
-}
-
 function extractTriggerWords(titles) {
   const triggerWords = [
     "murder", "killer", "missing", "disappeared", "found", "confession",
@@ -222,4 +233,266 @@ function extractTriggerWords(titles) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([trigger, count]) => ({ trigger, count }));
+}
+
+// =====================================================================
+// MODE 2: caseType — merged in from the old standalone competitor-scan.js
+// =====================================================================
+
+const YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search";
+const YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos";
+const CACHE_TTL_HOURS = 24;
+const DEFAULT_MAX_PER_QUERY = 15;
+
+async function handleCaseTypeScan(req, res, body) {
+  const youtubeKey = process.env.YOUTUBE_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!youtubeKey) return res.status(500).json({ error: "YOUTUBE_API_KEY is not set on the server" });
+  if (!groqKey) return res.status(500).json({ error: "GROQ_API_KEY is not set on the server" });
+
+  const { caseType, caseName, maxPerQuery } = body;
+  if (!caseType || !caseType.trim()) {
+    return res.status(400).json({
+      error: "caseType is required (e.g. 'unsolved missing person', 'courtroom trial', 'serial killer')",
+    });
+  }
+
+  const cacheKey = `competitor:scan:${slugify(caseType)}`;
+
+  try {
+    const cached = await kv.get(cacheKey);
+    if (cached && !isStale(cached.scanned_at)) {
+      return res.status(200).json({ ...cached, cached: true });
+    }
+
+    const queries = buildQueries(caseType);
+    const perQuery = maxPerQuery || DEFAULT_MAX_PER_QUERY;
+
+    const videoMap = new Map();
+    for (const q of queries) {
+      const ids = await searchVideoIds({ apiKey: youtubeKey, query: q, maxResults: perQuery });
+      if (ids.length === 0) continue;
+      const details = await fetchVideoDetails({ apiKey: youtubeKey, ids });
+      for (const v of details) videoMap.set(v.id, v);
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    const videos = Array.from(videoMap.values());
+    if (videos.length === 0) {
+      return res.status(200).json({
+        caseType,
+        scanned_at: new Date().toISOString(),
+        queries,
+        videoCount: 0,
+        topVideos: [],
+        patterns: null,
+        message: "No videos found for this case type — try broadening the query.",
+      });
+    }
+
+    videos.sort((a, b) => b.viewCount - a.viewCount);
+    const topVideos = videos.slice(0, 25);
+
+    const stats = {
+      avgViews: Math.round(average(videos.map((v) => v.viewCount))),
+      avgTitleLength: Math.round(average(videos.map((v) => v.title.length))),
+      avgDurationMinutes: Math.round((average(videos.map((v) => v.durationSeconds)) / 60) * 10) / 10,
+      categoryDistribution: buildCategoryDistribution(videos),
+      topTags: buildTagFrequency(videos, 20),
+    };
+
+    const patterns = await analyzePatterns({
+      groqKey,
+      caseType,
+      caseName,
+      topVideos: topVideos.slice(0, 15),
+    });
+
+    const result = {
+      caseType,
+      scanned_at: new Date().toISOString(),
+      queries,
+      videoCount: videos.length,
+      uniqueChannels: new Set(videos.map((v) => v.channelId)).size,
+      stats,
+      topVideos: topVideos.map((v) => ({
+        id: v.id,
+        title: v.title,
+        channelTitle: v.channelTitle,
+        channelId: v.channelId,
+        viewCount: v.viewCount,
+        likeCount: v.likeCount,
+        commentCount: v.commentCount,
+        publishedAt: v.publishedAt,
+        durationSeconds: v.durationSeconds,
+        categoryId: v.categoryId,
+        tags: v.tags.slice(0, 10),
+        url: `https://www.youtube.com/watch?v=${v.id}`,
+      })),
+      patterns,
+    };
+
+    await kv.set(cacheKey, result);
+    return res.status(200).json({ ...result, cached: false });
+  } catch (err) {
+    console.error("competitor-analyzer (caseType) error:", err);
+    return res.status(500).json({ error: "Competitor scan failed", detail: err.message });
+  }
+}
+
+function buildQueries(caseType) {
+  const base = caseType.trim();
+  return [`${base} true crime documentary`, `${base} case explained`, `${base} true crime`];
+}
+
+async function searchVideoIds({ apiKey, query, maxResults }) {
+  const params = new URLSearchParams({
+    key: apiKey,
+    q: query,
+    part: "snippet",
+    type: "video",
+    order: "viewCount",
+    maxResults: String(Math.min(maxResults, 50)),
+    videoDuration: "medium",
+    relevanceLanguage: "en",
+  });
+
+  const resp = await fetch(`${YOUTUBE_SEARCH_URL}?${params.toString()}`);
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`YouTube search failed (${resp.status}): ${body.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+  return (data.items || []).map((item) => item.id && item.id.videoId).filter(Boolean);
+}
+
+async function fetchVideoDetails({ apiKey, ids }) {
+  const params = new URLSearchParams({
+    key: apiKey,
+    id: ids.join(","),
+    part: "snippet,statistics,contentDetails",
+  });
+
+  const resp = await fetch(`${YOUTUBE_VIDEOS_URL}?${params.toString()}`);
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`YouTube videos.list failed (${resp.status}): ${body.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+
+  return (data.items || []).map((item) => ({
+    id: item.id,
+    title: item.snippet?.title || "",
+    channelTitle: item.snippet?.channelTitle || "",
+    channelId: item.snippet?.channelId || "",
+    publishedAt: item.snippet?.publishedAt || null,
+    categoryId: item.snippet?.categoryId || null,
+    tags: item.snippet?.tags || [],
+    viewCount: Number(item.statistics?.viewCount || 0),
+    likeCount: Number(item.statistics?.likeCount || 0),
+    commentCount: Number(item.statistics?.commentCount || 0),
+    durationSeconds: parseIsoDuration(item.contentDetails?.duration),
+  }));
+}
+
+function buildCategoryDistribution(videos) {
+  const counts = {};
+  for (const v of videos) {
+    const key = v.categoryId || "unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([categoryId, count]) => ({ categoryId, count }));
+}
+
+function buildTagFrequency(videos, limit) {
+  const counts = {};
+  for (const v of videos) {
+    for (const tag of v.tags) {
+      const key = tag.toLowerCase().trim();
+      if (!key) continue;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([tag, count]) => ({ tag, count }));
+}
+
+function parseIsoDuration(iso) {
+  if (!iso) return 0;
+  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const [, h, m, s] = match;
+  return (Number(h) || 0) * 3600 + (Number(m) || 0) * 60 + (Number(s) || 0);
+}
+
+function slugify(text) {
+  return text.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").slice(0, 60);
+}
+
+function isStale(scannedAt) {
+  if (!scannedAt) return true;
+  const ageMs = Date.now() - new Date(scannedAt).getTime();
+  return ageMs > CACHE_TTL_HOURS * 60 * 60 * 1000;
+}
+
+async function analyzePatterns({ groqKey, caseType, caseName, topVideos }) {
+  const systemPrompt = `You analyze real YouTube performance data for true crime content to extract concrete, non-generic patterns. Base every claim on the actual video data given — do not give generic YouTube SEO advice. Respond with ONLY valid JSON, no markdown, no commentary.`;
+
+  const videoList = topVideos
+    .map(
+      (v, i) =>
+        `${i + 1}. "${v.title}" — ${v.viewCount.toLocaleString()} views, ${Math.round(v.durationSeconds / 60)}min, tags: ${v.tags.slice(0, 6).join(", ") || "none"}`
+    )
+    .join("\n");
+
+  const userPrompt = `
+CASE TYPE: ${caseType}
+${caseName ? `SPECIFIC CASE BEING WORKED ON: ${caseName}` : ""}
+
+TOP-PERFORMING VIDEOS FOUND FOR THIS CASE TYPE:
+${videoList}
+
+Based ONLY on this real data, extract:
+1. titleStructurePatterns: recurring structural patterns in the winning titles (e.g. "Name + location + one-word hook"), max 4, each with a short example pulled from the list above
+2. commonHooks: recurring emotional/curiosity triggers that show up across these specific titles, max 5
+3. lengthGuidance: one sentence on the title/video length that's actually winning here, based on the numbers above
+4. recommendation: 2-3 sentences of concrete guidance for shaping ${caseName || "a new case in this category"}, based on what's actually working above
+
+Return JSON: { "titleStructurePatterns": [{"pattern": "...", "example": "..."}], "commonHooks": ["..."], "lengthGuidance": "...", "recommendation": "..." }
+`.trim();
+
+  const raw = await groqCompleteWithRetry({ apiKey: groqKey, systemPrompt, userPrompt });
+  return extractJson(raw) || { note: "Pattern analysis failed to parse — raw stats above are still usable." };
+}
+
+// =====================================================================
+// Shared utilities
+// =====================================================================
+
+function average(nums) {
+  const valid = nums.filter((n) => Number.isFinite(n));
+  if (valid.length === 0) return 0;
+  return valid.reduce((sum, n) => sum + n, 0) / valid.length;
+}
+
+// Thin retry wrapper around the shared groqComplete helper: on a 429
+// (rate limit), waits and retries a couple of times instead of throwing
+// immediately. This is the fix for the "Groq transient error: 429" crash
+// seen earlier — that endpoint had no backoff at all.
+async function groqCompleteWithRetry(args, attempt = 1) {
+  try {
+    return await groqComplete(args);
+  } catch (err) {
+    const is429 = /429/.test(err?.message || "");
+    if (is429 && attempt < 3) {
+      const waitMs = 1500 * attempt;
+      await new Promise((r) => setTimeout(r, waitMs));
+      return groqCompleteWithRetry(args, attempt + 1);
+    }
+    throw err;
+  }
 }

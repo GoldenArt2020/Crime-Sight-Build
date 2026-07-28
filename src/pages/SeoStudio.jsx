@@ -59,10 +59,14 @@ export default function SeoStudio() {
     setCompetitorLoading(true);
     setCompetitorError(null);
     try {
-      const res = await fetch("/api/competitor-scan", {
+      // Merged into competitor-analyzer.js (mode: "caseType") to stay under
+      // the Hobby plan's 12-serverless-function limit — the old standalone
+      // /api/competitor-scan endpoint was removed.
+      const res = await fetch("/api/competitor-analyzer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode: "caseType",
           caseType: caseType.trim(),
           caseName: caseName.trim() || undefined,
         }),
