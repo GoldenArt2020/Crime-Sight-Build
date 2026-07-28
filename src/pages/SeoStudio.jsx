@@ -42,6 +42,7 @@ export default function SeoStudio() {
           channelId,
           caseName: caseName.trim() || undefined,
           script: script.trim() || undefined,
+          competitorPatterns: competitorData || undefined,
         }),
       });
       const data = await res.json();
@@ -152,6 +153,11 @@ export default function SeoStudio() {
               : "Without a script, description and tags are generated from the title alone and will be more generic."}
           </p>
         </div>
+        {competitorData && competitorData.videoCount > 0 && (
+          <p className="text-xs text-cyan-300/70 -mt-1">
+            Scoring will factor in live competitor patterns for "{competitorData.caseType}"
+          </p>
+        )}
         <button
           onClick={handleScore}
           disabled={loading}

@@ -4,18 +4,15 @@
 // suggests stronger alternatives + description/tag/category guidance.
 // Optionally accepts the actual video script so description, tags, and
 // category recommendations are grounded in real content instead of
-// guessed from the title alone.
+// guessed from the title alone. Optionally accepts competitorPatterns
+// (from /api/competitor-analyzer in caseType mode) so scoring is also
+// benchmarked against what's actually working for this case type right now.
 // POST /api/seo-score
-// Body: { title: string, channelId: string, caseName?: string, script?: string }
+// Body: { title: string, channelId: string, caseName?: string, script?: string, competitorPatterns?: object }
 
 import { kv } from "./_lib/kv.js";
 import { groqComplete, extractJson } from "./_lib/groq.js";
 
-// YouTube's actual Studio category list (the ones creators can pick from
-// when uploading). The model must choose from this fixed set — true crime
-// content realistically lands in one of a handful of these, and inventing
-// a category outside this list (e.g. "Documentary", which YouTube doesn't
-// even offer) would be a suggestion the creator can't actually select.
 const YOUTUBE_CATEGORIES = [
   "Film & Animation",
   "Autos & Vehicles",
@@ -34,8 +31,6 @@ const YOUTUBE_CATEGORIES = [
   "Nonprofits & Activism",
 ];
 
-// Cap how much script we forward — plenty for grounding tone/details, without
-// blowing up prompt size/latency on a full multi-thousand-word script.
 const MAX_SCRIPT_CHARS = 6000;
 
 export default async function handler(req, res) {
@@ -44,7 +39,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { title, channelId, caseName, script } = req.body || {};
+  const { title, channelId, caseName, script, competitorPatterns } = req.body || {};
 
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title is required" });
@@ -61,7 +56,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const result = await scoreTitle({ title, channelProfile, caseName, script });
+    const result = await scoreTitle({ title, channelProfile, caseName, script, competitorPatterns });
 
     return res.status(200).json({
       title,
@@ -76,8 +71,8 @@ export default async function handler(req, res) {
   }
 }
 
-async function scoreTitle({ title, channelProfile, caseName, script }) {
-  const systemPrompt = `You are a YouTube SEO analyst specializing in true crime content. You score titles against a specific channel's own historical performance patterns, not generic SEO advice. You are honest about weaknesses — a title with no emotional trigger and no curiosity gap should score low. When a script is provided, ground your description, tags, and category recommendation in the script's actual content and details rather than guessing from the title alone. Respond with ONLY a JSON object, no markdown, no commentary.`;
+async function scoreTitle({ title, channelProfile, caseName, script, competitorPatterns }) {
+  const systemPrompt = `You are a YouTube SEO analyst specializing in true crime content. You score titles against a specific channel's own historical performance patterns, not generic SEO advice. When live competitor data for this exact case type is provided, weigh it heavily — it reflects what's actually working right now, not just this channel's past. You are honest about weaknesses — a title with no emotional trigger and no curiosity gap should score low. When a script is provided, ground your description, tags, and category recommendation in the script's actual content and details rather than guessing from the title alone. Respond with ONLY a JSON object, no markdown, no commentary.`;
 
   const topTriggerWords = (channelProfile.topTriggers || [])
     .map((t) => t.trigger)
@@ -86,6 +81,8 @@ async function scoreTitle({ title, channelProfile, caseName, script }) {
   const scriptExcerpt = script && script.trim()
     ? script.trim().slice(0, MAX_SCRIPT_CHARS)
     : null;
+
+  const competitorSection = buildCompetitorSection(competitorPatterns);
 
   const userPrompt = `
 PROPOSED TITLE: "${title}"
@@ -99,12 +96,14 @@ Channel's ideal title length (from top-quartile videos): ${channelProfile.avgTit
 Channel's top-performing emotional triggers: ${topTriggerWords || "none identified"}
 Channel's best historical video: ${channelProfile.topVideo?.title || "unknown"} (${channelProfile.topVideo?.viewsPerDay || 0} views/day)
 Avg engagement rate: ${channelProfile.avgEngagementRate || "unknown"}%
+${competitorSection}
 
 VALID YOUTUBE CATEGORIES (you must pick exactly one of these — do not invent a category outside this list):
 ${YOUTUBE_CATEGORIES.join(", ")}
 
 TASK:
-Score this title 0-100 for how well it fits THIS channel's proven patterns, then explain and improve it.
+Score this title 0-100 for how well it fits THIS channel's proven patterns${competitorPatterns ? " AND how competitive it is against the live case-type data above" : ""}, then explain and improve it.
+${competitorPatterns ? "When suggesting alternatives, apply the competitor title structures and hooks where they genuinely fit this case — don't force them if they clash with the channel's own voice." : ""}
 Do NOT invent an optimal upload time — that is supplied separately from real analytics data, not part of your output.
 DO recommend a YouTube category from the list above, with a short reason grounded in the content (not a default guess).
 
@@ -152,9 +151,6 @@ Return JSON in this exact shape:
     throw new Error(`Groq returned an unparseable score result. Raw response (truncated): ${snippet}`);
   }
 
-  // Guard against the model picking something outside the valid list despite
-  // instructions — fall back to a safe default rather than showing a category
-  // the creator can't actually select in YouTube Studio.
   if (
     parsed.categoryRecommendation &&
     !YOUTUBE_CATEGORIES.includes(parsed.categoryRecommendation.category)
@@ -171,10 +167,31 @@ Return JSON in this exact shape:
   };
 }
 
-// ---- Real publishing-time optimizer, built from channel-analyze.js's publishTiming data ----
-// No model guessing here — this reads the channel's own computed best day/hour.
-// Category lives in categoryRecommendation above instead (it needs judgment
-// about content, which isn't something derivable from upload timestamps).
+// Builds a prompt section from /api/competitor-analyzer's caseType-mode
+// output, if the frontend passed one along. Silently omitted if absent or
+// malformed — this is a bonus signal, not a required input.
+function buildCompetitorSection(competitorPatterns) {
+  if (!competitorPatterns || competitorPatterns.videoCount === 0) return "";
+
+  const p = competitorPatterns.patterns || {};
+  const stats = competitorPatterns.stats || {};
+
+  const structurePatterns = (p.titleStructurePatterns || [])
+    .map((sp) => `  - ${sp.pattern}: "${sp.example}"`)
+    .join("\n");
+
+  const hooks = (p.commonHooks || []).join(", ");
+
+  return `
+LIVE COMPETITOR DATA FOR THIS CASE TYPE ("${competitorPatterns.caseType}"):
+Based on ${competitorPatterns.videoCount} top-performing videos across ${competitorPatterns.uniqueChannels || "several"} channels right now.
+Avg views: ${stats.avgViews ?? "unknown"} | Avg title length: ${stats.avgTitleLength ?? "unknown"} chars | Avg video length: ${stats.avgDurationMinutes ?? "unknown"} min
+${structurePatterns ? `Title structure patterns currently working:\n${structurePatterns}` : ""}
+${hooks ? `Common hooks in top titles: ${hooks}` : ""}
+${p.lengthGuidance ? `Length guidance: ${p.lengthGuidance}` : ""}
+${p.recommendation ? `Strategist recommendation: ${p.recommendation}` : ""}
+`.trim();
+}
 
 function buildPublishingOptimizer(channelProfile) {
   const timing = channelProfile.publishTiming;
