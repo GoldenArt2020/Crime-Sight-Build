@@ -1,13 +1,7 @@
 {
-  "crons": [
-    {
-      "path": "/api/daily-trending-scan",
-      "schedule": "0 */6 * * *"
-    }
-  ],
   "rewrites": [
     {
-      "source": "/((?!api/).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
