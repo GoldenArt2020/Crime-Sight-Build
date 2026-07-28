@@ -256,7 +256,7 @@ export default function SeoStudio() {
                       </h4>
                       <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
                         {competitorData.topVideos.slice(0, 10).map((v) => (
-                          
+                          <a
                             key={v.id}
                             href={v.url}
                             target="_blank"
