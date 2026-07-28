@@ -1,8 +1,1 @@
-{
-  "crons": [
-    {
-      "path": "/api/daily-trending-scan",
-      "schedule": "0 */6 * * *"
-    }
-  ]
-}
+{}
