@@ -53,12 +53,20 @@ function CaseCard({ item, channelId, onAnglesGenerated }) {
     setLocalError(null);
     setGenerating(true);
     try {
+      // Make sure the case has been researched first (populates case:detail:<id>
+      // in KV) — otherwise angle-generator 404s if "Start Research" was never clicked.
+      const detailParams = new URLSearchParams();
+      if (item.id) detailParams.set("id", item.id);
+      if (item.name) detailParams.set("name", item.name);
+      const detailRes = await fetch(`/api/case-detail?${detailParams.toString()}`);
+      const detailData = await detailRes.json();
+      if (!detailRes.ok) throw new Error(detailData.error || "Failed to research case");
+
       const res = await fetch("/api/angle-generator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          caseId: item.id,
-          caseName: item.id ? undefined : item.name,
+          caseId: detailData.id,
           channelId,
         }),
       });

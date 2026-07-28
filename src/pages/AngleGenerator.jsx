@@ -13,10 +13,19 @@ export default function AngleGenerator() {
     setLoading(true);
     setError(null);
     try {
+      // Ensure the case has been researched first (populates case:detail:<id>
+      // in KV under the id case-detail.js actually assigns) before asking
+      // angle-generator to read it — otherwise this 404s for a case that
+      // was already researched elsewhere under a different id.
+      const detailParams = new URLSearchParams({ name: caseName });
+      const detailRes = await fetch(`/api/case-detail?${detailParams.toString()}`);
+      const detailData = await detailRes.json();
+      if (!detailRes.ok) throw new Error(detailData.error || "Failed to research case");
+
       const res = await fetch("/api/angle-generator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ caseName, channelId }),
+        body: JSON.stringify({ caseId: detailData.id, channelId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to generate angles");
