@@ -56,67 +56,74 @@ Respond with ONLY valid JSON: {"cases": [{"name": string, "location": string, "d
 
 Respond with ONLY valid JSON: {"emotion": number, "mystery": number, "institutional_failure": number, "public_outrage": number}.`;
 
-    const enrichedCases = await Promise.all(
-      shortlist.map(async (c) => {
-        const searchName = `${c.name} ${c.location}`;
+    // Groq's free tier has a per-minute rate limit. Running all case-enrichment
+    // calls in parallel (Promise.all) can burst past that limit in one instant,
+    // so this processes cases one at a time and pauses briefly between each
+    // Groq call. YouTube and Reddit calls are cheap/high-limit, so those two
+    // still run in parallel per case.
+    const enrichedCases = [];
+    for (const c of shortlist) {
+      const searchName = `${c.name} ${c.location}`;
 
-        const [ytData, redditData, qualText] = await Promise.all([
-          youtubeCoverage({ apiKey: youtubeKey, query: searchName }),
-          redditSignal({ clientId: redditId, clientSecret: redditSecret, query: searchName }),
-          groqComplete({
-            apiKey: groqKey,
-            systemPrompt: qualitativeSystemPrompt,
-            userPrompt: `Case: ${c.name}\nLocation: ${c.location}\nStatus: ${c.case_status}\nSummary: ${c.summary}`,
-          }),
-        ]);
+      const [ytData, redditData] = await Promise.all([
+        youtubeCoverage({ apiKey: youtubeKey, query: searchName }),
+        redditSignal({ clientId: redditId, clientSecret: redditSecret, query: searchName }),
+      ]);
 
-        const qualitative = extractJson(qualText) || {};
-        const competition = competitionScore({ video_count: ytData.video_count, avg_views: ytData.avg_views });
-        const momentum = momentumScore({
+      const qualText = await groqComplete({
+        apiKey: groqKey,
+        systemPrompt: qualitativeSystemPrompt,
+        userPrompt: `Case: ${c.name}\nLocation: ${c.location}\nStatus: ${c.case_status}\nSummary: ${c.summary}`,
+      });
+
+      await new Promise((r) => setTimeout(r, 1200)); // pace Groq calls to respect free-tier RPM limit
+
+      const qualitative = extractJson(qualText) || {};
+      const competition = competitionScore({ video_count: ytData.video_count, avg_views: ytData.avg_views });
+      const momentum = momentumScore({
+        mention_count: redditData.mention_count,
+        total_score: redditData.total_score,
+        total_comments: redditData.total_comments,
+      });
+      const recency = recencyScore(c.date);
+      const overall = overallViralScore({ competition, momentum, recency, qualitative });
+
+      enrichedCases.push({
+        id: `${c.name}-${c.location}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 80),
+        name: c.name,
+        location: c.location,
+        date: c.date,
+        summary: c.summary,
+        case_status: c.case_status,
+        source_count: c.source_count || null,
+        youtube_coverage: {
+          video_count: ytData.video_count,
+          avg_views: ytData.avg_views,
+          top_video: ytData.top_video,
+          available: ytData.available,
+        },
+        social_signal: {
           mention_count: redditData.mention_count,
-          total_score: redditData.total_score,
-          total_comments: redditData.total_comments,
-        });
-        const recency = recencyScore(c.date);
-        const overall = overallViralScore({ competition, momentum, recency, qualitative });
-
-        return {
-          id: `${c.name}-${c.location}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 80),
-          name: c.name,
-          location: c.location,
-          date: c.date,
-          summary: c.summary,
-          case_status: c.case_status,
-          source_count: c.source_count || null,
-          youtube_coverage: {
-            video_count: ytData.video_count,
-            avg_views: ytData.avg_views,
-            top_video: ytData.top_video,
-            available: ytData.available,
-          },
-          social_signal: {
-            mention_count: redditData.mention_count,
-            top_post: redditData.top_post,
-            subreddits: redditData.subreddits,
-            available: redditData.available,
-          },
-          viral_score: {
-            overall,
-            competition: competition.score,
-            competition_label: competition.label,
-            momentum: momentum.score,
-            momentum_trend: momentum.trend,
-            recency: recency.score,
-            days_ago: recency.days_ago,
-            emotion: qualitative.emotion ?? null,
-            mystery: qualitative.mystery ?? null,
-            institutional_failure: qualitative.institutional_failure ?? null,
-            public_outrage: qualitative.public_outrage ?? null,
-          },
-          scanned_at: new Date().toISOString(),
-        };
-      })
-    );
+          top_post: redditData.top_post,
+          subreddits: redditData.subreddits,
+          available: redditData.available,
+        },
+        viral_score: {
+          overall,
+          competition: competition.score,
+          competition_label: competition.label,
+          momentum: momentum.score,
+          momentum_trend: momentum.trend,
+          recency: recency.score,
+          days_ago: recency.days_ago,
+          emotion: qualitative.emotion ?? null,
+          mystery: qualitative.mystery ?? null,
+          institutional_failure: qualitative.institutional_failure ?? null,
+          public_outrage: qualitative.public_outrage ?? null,
+        },
+        scanned_at: new Date().toISOString(),
+      });
+    }
 
     enrichedCases.sort((a, b) => b.viral_score.overall - a.viral_score.overall);
 
