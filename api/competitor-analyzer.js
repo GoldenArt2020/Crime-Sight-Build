@@ -145,7 +145,8 @@ Return JSON in this exact shape:
 
   const parsed = extractJson(raw);
   if (!parsed || !parsed.positioning) {
-    throw new Error("Groq returned an unparseable comparison result");
+    const snippet = (raw || "(empty response)").slice(0, 800);
+    throw new Error(`Groq returned an unparseable comparison result. Raw response (truncated): ${snippet}`);
   }
   return parsed;
 }

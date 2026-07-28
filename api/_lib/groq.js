@@ -6,7 +6,7 @@
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MODEL = "llama-3.3-70b-versatile"; // free-tier model
 
-export async function groqComplete({ apiKey, systemPrompt, userPrompt, retries = 2 }) {
+export async function groqComplete({ apiKey, systemPrompt, userPrompt, retries = 4 }) {
   let lastErr;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -29,7 +29,15 @@ export async function groqComplete({ apiKey, systemPrompt, userPrompt, retries =
       });
 
       if (res.status === 429 || res.status >= 500) {
-        throw new Error(`Groq transient error: ${res.status}`);
+        // Groq (like most rate-limited APIs) may send Retry-After on 429s —
+        // honor it when present instead of guessing with pure backoff, since
+        // free-tier limits are often per-minute and a short backoff isn't
+        // long enough to actually clear.
+        const retryAfterHeader = res.headers.get("retry-after");
+        const retryAfterMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : null;
+        const err = new Error(`Groq transient error: ${res.status}`);
+        err.retryAfterMs = retryAfterMs;
+        throw err;
       }
       if (!res.ok) {
         const body = await res.text();
@@ -41,7 +49,13 @@ export async function groqComplete({ apiKey, systemPrompt, userPrompt, retries =
     } catch (err) {
       lastErr = err;
       if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+        // Base backoff: 1s, 2s, 4s, 8s — with jitter to avoid thundering-herd
+        // retries if multiple requests are rate limited at once. If the
+        // server told us how long to wait, use whichever is longer.
+        const baseDelay = 1000 * 2 ** attempt;
+        const jitter = Math.random() * 300;
+        const delay = Math.max(baseDelay + jitter, err.retryAfterMs || 0);
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
