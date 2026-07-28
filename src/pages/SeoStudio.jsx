@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, Search, CheckCircle2, AlertTriangle, XCircle, Clock } from "lucide-react";
+import { Loader2, Search, CheckCircle2, AlertTriangle, XCircle, Clock, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
 
 const STATUS_ICON = {
   pass: <CheckCircle2 size={14} className="text-cyan-400 shrink-0" />,
@@ -21,6 +21,13 @@ export default function SeoStudio() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // --- competitor scan state (separate from title-scoring state above) ---
+  const [caseType, setCaseType] = useState("");
+  const [competitorData, setCompetitorData] = useState(null);
+  const [competitorLoading, setCompetitorLoading] = useState(false);
+  const [competitorError, setCompetitorError] = useState(null);
+  const [competitorExpanded, setCompetitorExpanded] = useState(true);
 
   async function handleScore() {
     if (!title.trim() || !channelId.trim()) return;
@@ -44,6 +51,30 @@ export default function SeoStudio() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleCompetitorScan() {
+    if (!caseType.trim()) return;
+    setCompetitorLoading(true);
+    setCompetitorError(null);
+    try {
+      const res = await fetch("/api/competitor-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          caseType: caseType.trim(),
+          caseName: caseName.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to scan competitors");
+      setCompetitorData(data);
+      setCompetitorExpanded(true);
+    } catch (err) {
+      setCompetitorError(err.message);
+    } finally {
+      setCompetitorLoading(false);
     }
   }
 
@@ -71,12 +102,38 @@ export default function SeoStudio() {
           placeholder="Proposed video title"
           className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
         />
-        <input
-          value={caseName}
-          onChange={(e) => setCaseName(e.target.value)}
-          placeholder="Case name (optional, improves accuracy)"
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
-        />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <input
+            value={caseName}
+            onChange={(e) => setCaseName(e.target.value)}
+            placeholder="Case name (optional, improves accuracy)"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+          />
+          <div className="flex gap-2">
+            <input
+              value={caseType}
+              onChange={(e) => setCaseType(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleCompetitorScan()}
+              placeholder="Case type (e.g. unsolved missing person)"
+              className="flex-1 bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+            />
+            <button
+              onClick={handleCompetitorScan}
+              disabled={competitorLoading || !caseType.trim()}
+              title="Scan top-performing YouTube videos for this case type"
+              className="shrink-0 px-3 py-2 rounded-lg bg-white/10 border border-white/10 text-sm font-medium disabled:opacity-40 flex items-center gap-1.5 hover:bg-white/15 transition-colors"
+            >
+              {competitorLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <TrendingUp size={14} />
+              )}
+              <span className="hidden sm:inline">Scan Competitors</span>
+            </button>
+          </div>
+        </div>
+
         <div>
           <textarea
             value={script}
@@ -99,6 +156,128 @@ export default function SeoStudio() {
           {loading ? <><Loader2 size={14} className="animate-spin" /> Scoring...</> : <><Search size={14} /> Score Title</>}
         </button>
       </div>
+
+      {competitorError && (
+        <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">
+          {competitorError}
+        </div>
+      )}
+
+      {competitorData && (
+        <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
+          <button
+            onClick={() => setCompetitorExpanded((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-white/5 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <TrendingUp size={14} className="text-cyan-400" />
+              <span className="text-sm font-medium">
+                Competitor patterns — "{competitorData.caseType}"
+              </span>
+              {competitorData.cached && (
+                <span className="text-xs text-white/30 px-1.5 py-0.5 rounded bg-white/5">cached</span>
+              )}
+            </div>
+            {competitorExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+
+          {competitorExpanded && (
+            <div className="px-4 pb-4 space-y-4 border-t border-white/10 pt-3">
+              {competitorData.videoCount === 0 ? (
+                <p className="text-sm text-white/40">{competitorData.message}</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-3 text-center">
+                    <div className="rounded-lg bg-black/30 p-2.5">
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {competitorData.stats?.avgViews?.toLocaleString() ?? "—"}
+                      </p>
+                      <p className="text-xs text-white/40">avg views</p>
+                    </div>
+                    <div className="rounded-lg bg-black/30 p-2.5">
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {competitorData.stats?.avgTitleLength ?? "—"}
+                      </p>
+                      <p className="text-xs text-white/40">avg title length</p>
+                    </div>
+                    <div className="rounded-lg bg-black/30 p-2.5">
+                      <p className="text-lg font-semibold text-cyan-300">
+                        {competitorData.stats?.avgDurationMinutes ?? "—"}m
+                      </p>
+                      <p className="text-xs text-white/40">avg length</p>
+                    </div>
+                  </div>
+
+                  {competitorData.patterns?.titleStructurePatterns?.length > 0 && (
+                    <div>
+                      <h4 className="text-xs uppercase text-white/40 mb-1.5">Title Structure Patterns</h4>
+                      <div className="space-y-1.5">
+                        {competitorData.patterns.titleStructurePatterns.map((p, i) => (
+                          <p key={i} className="text-sm text-white/70">
+                            <span className="text-fuchsia-300 font-medium">{p.pattern}: </span>
+                            <span className="text-white/50">"{p.example}"</span>
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {competitorData.patterns?.commonHooks?.length > 0 && (
+                    <div>
+                      <h4 className="text-xs uppercase text-white/40 mb-1.5">Common Hooks</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {competitorData.patterns.commonHooks.map((h, i) => (
+                          <span key={i} className="text-xs px-2 py-1 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/20">
+                            {h}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {competitorData.patterns?.lengthGuidance && (
+                    <p className="text-sm text-white/60">
+                      <span className="text-white/40">Length: </span>
+                      {competitorData.patterns.lengthGuidance}
+                    </p>
+                  )}
+
+                  {competitorData.patterns?.recommendation && (
+                    <div className="rounded-lg bg-black/30 p-3 border border-white/5">
+                      <h4 className="text-xs uppercase text-white/40 mb-1">Recommendation</h4>
+                      <p className="text-sm text-white/80">{competitorData.patterns.recommendation}</p>
+                    </div>
+                  )}
+
+                  {competitorData.topVideos?.length > 0 && (
+                    <div>
+                      <h4 className="text-xs uppercase text-white/40 mb-1.5">
+                        Top Videos ({competitorData.videoCount} found, {competitorData.uniqueChannels} channels)
+                      </h4>
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                        {competitorData.topVideos.slice(0, 10).map((v) => (
+                          
+                            key={v.id}
+                            href={v.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded-lg bg-black/30 p-2.5 hover:bg-black/40 transition-colors"
+                          >
+                            <p className="text-sm text-white/80 line-clamp-1">{v.title}</p>
+                            <p className="text-xs text-white/40 mt-0.5">
+                              {v.channelTitle} · {v.viewCount.toLocaleString()} views
+                            </p>
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
