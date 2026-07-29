@@ -29,7 +29,11 @@ export default async function handler(req, res) {
       return res.status(200).json(cached);
     }
 
-    const caseName = name;
+    // Fallback: channel-matches.js sends `id` as the raw case name for
+    // cases that haven't been researched yet (no separate slug exists),
+    // so if `name` wasn't explicitly passed, use `id` to research fresh
+    // instead of failing.
+    const caseName = name || id;
     if (!caseName) {
       return res.status(404).json({ error: "No cached case found for that id, and no name given to research fresh" });
     }
