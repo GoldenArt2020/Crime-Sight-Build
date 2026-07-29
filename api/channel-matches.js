@@ -16,8 +16,10 @@ function scoreFit(channelProfile, caseItem) {
   const coverageScore =
     caseItem.coverage === "unreleased" ? 30 : caseItem.coverage === "low_coverage" ? 20 : 10;
 
-  // Use the case's own scoring if present (viral/momentum from trending-scan)
-  const caseQuality = caseItem.scores?.viral ?? caseItem.viral_score ?? 50;
+  // Use the case's own viral score if present (viral_score is an object
+  // like { overall, competition, public_outrage } from trending-scan/scoring.js —
+  // pull out .overall, don't use the object itself, or this becomes NaN).
+  const caseQuality = caseItem.viral_score?.overall ?? 50;
   const qualityScore = Math.min(30, Math.round((caseQuality / 100) * 30));
 
   const fitScore = Math.min(100, normalizedKeywordScore + coverageScore + qualityScore);
