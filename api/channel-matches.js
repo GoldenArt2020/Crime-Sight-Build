@@ -38,6 +38,11 @@ function scoreFit(channelProfile, caseItem) {
 
 
 async function generateAngle(groqKey, channelProfile, caseItem, matchedTriggers) {
+  const fallback = {
+    why_it_matches: "Matches your channel's proven archetype.",
+    recommended_angle: `The story behind ${caseItem.name}`,
+  };
+
   const systemPrompt = `You write one-sentence content-strategy notes for a true crime YouTube creator. Given their channel archetype, their proven title triggers, and a candidate case, respond with ONLY valid JSON: {"why_it_matches": string (max 20 words, concrete), "recommended_angle": string (a specific video angle/title direction, max 15 words)}. Be concrete and reference the actual case facts given — never generic filler.`;
 
 
@@ -51,19 +56,29 @@ Location: ${caseItem.location || "unspecified"}
 Summary: ${caseItem.summary || "unspecified"}
 Coverage status: ${caseItem.coverage || "unspecified"}`;
 
-
+  // groqComplete's own retry/backoff (up to 4 attempts, honoring a
+  // server-sent Retry-After) can legitimately run 60s+ on a single call
+  // when Groq is rate-limiting. Pacing calls sequentially stopped them
+  // from bursting past the limit together, but one slow call in the
+  // sequence could still push the total wall-clock for 6 cases past
+  // Vercel's 300s function cap. Racing against a per-call timeout caps
+  // the worst case at timeoutMs per case (6 * 12s = 72s max) regardless
+  // of how long Groq's own retries take in the background.
   try {
-    const text = await groqComplete({ apiKey: groqKey, systemPrompt, userPrompt });
-    const parsed = extractJson(text);
-    return {
-      why_it_matches: parsed?.why_it_matches || "Matches your channel's proven archetype.",
-      recommended_angle: parsed?.recommended_angle || `The story behind ${caseItem.name}`,
-    };
+    const result = await Promise.race([
+      (async () => {
+        const text = await groqComplete({ apiKey: groqKey, systemPrompt, userPrompt, retries: 1 });
+        const parsed = extractJson(text);
+        return {
+          why_it_matches: parsed?.why_it_matches || fallback.why_it_matches,
+          recommended_angle: parsed?.recommended_angle || fallback.recommended_angle,
+        };
+      })(),
+      new Promise((resolve) => setTimeout(() => resolve(fallback), 12000)),
+    ]);
+    return result;
   } catch {
-    return {
-      why_it_matches: "Matches your channel's proven archetype.",
-      recommended_angle: `The story behind ${caseItem.name}`,
-    };
+    return fallback;
   }
 }
 
@@ -121,7 +136,7 @@ export default async function handler(req, res) {
       };
       if (groqKey) {
         angle = await generateAngle(groqKey, channelProfile, item.case, item.matchedTriggers);
-        await new Promise((r) => setTimeout(r, 1200)); // pace Groq calls to respect free-tier RPM limit
+        await new Promise((r) => setTimeout(r, 800)); // pace Groq calls to respect free-tier RPM limit
       }
       enrichedTop.push({
         id: item.case.id || item.case.name,
