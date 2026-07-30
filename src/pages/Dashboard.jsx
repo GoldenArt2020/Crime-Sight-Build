@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { Loader2, TrendingUp, Sparkles, Radar } from "lucide-react";
+import { Loader2, TrendingUp, Sparkles, Radar, ListChecks } from "lucide-react";
+
+const STAGE_LABELS = {
+  idea: "Idea",
+  researching: "Researching",
+  scripting: "Scripting",
+  thumbnail: "Thumbnail",
+  published: "Published",
+};
 
 function MiniGauge({ value }) {
   const color = value >= 85 ? "text-cyan-400" : value >= 60 ? "text-amber-300" : "text-pink-400";
@@ -10,15 +18,32 @@ export default function Dashboard() {
   const [trending, setTrending] = useState([]);
   const [channel, setChannel] = useState(null);
   const [matches, setMatches] = useState([]);
+  const [pipeline, setPipeline] = useState([]);
   const [loadingTrending, setLoadingTrending] = useState(true);
   const [loadingChannel, setLoadingChannel] = useState(true);
   const [loadingMatches, setLoadingMatches] = useState(true);
+  const [loadingPipeline, setLoadingPipeline] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     loadTrending();
     loadChannel();
+    loadPipeline();
   }, []);
+
+  async function loadPipeline() {
+    setLoadingPipeline(true);
+    try {
+      const res = await fetch("/api/publishing-queue");
+      const data = await res.json();
+      // Only show cases still in progress — published ones don't need "continuing"
+      setPipeline((data.queue || []).filter((c) => (c.stage || "idea") !== "published").slice(0, 4));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoadingPipeline(false);
+    }
+  }
 
   async function loadTrending() {
     setLoadingTrending(true);
@@ -58,7 +83,10 @@ export default function Dashboard() {
     try {
       const res = await fetch("/api/channel-matches");
       const data = await res.json();
-      setMatches((data.matches || []).slice(0, 4));
+      const sorted = [...(data.matches || [])].sort(
+        (a, b) => (b.fitScore ?? 0) - (a.fitScore ?? 0)
+      );
+      setMatches(sorted.slice(0, 4));
     } catch {
       // non-fatal — opportunity radar just stays empty
     } finally {
@@ -77,6 +105,35 @@ export default function Dashboard() {
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
       )}
 
+      {/* Continue Working — "what should I do next" */}
+      <div>
+        <h3 className="text-xs uppercase text-white/40 mb-3 flex items-center gap-1.5">
+          <ListChecks size={13} /> Continue Working
+        </h3>
+        {loadingPipeline ? (
+          <div className="flex items-center gap-2 text-white/40 text-sm">
+            <Loader2 size={14} className="animate-spin" /> Loading...
+          </div>
+        ) : pipeline.length === 0 ? (
+          <p className="text-sm text-white/30">Nothing in progress — save a case from Discovery to start a project.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {pipeline.map((c) => (
+              <a
+                key={c.id}
+                href={`/case-intelligence?id=${encodeURIComponent(c.id)}&name=${encodeURIComponent(c.name)}`}
+                className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-3 hover:border-cyan-400/30 transition-colors block"
+              >
+                <p className="text-sm font-medium truncate">{c.name}</p>
+                <span className="inline-block mt-1.5 text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300">
+                  {STAGE_LABELS[c.stage || "idea"]}
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Trending Now */}
         <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4">
@@ -88,7 +145,7 @@ export default function Dashboard() {
               <Loader2 size={14} className="animate-spin" /> Loading...
             </div>
           ) : trending.length === 0 ? (
-            <p className="text-sm text-white/30">No cases yet — run a scan from Discover Cases.</p>
+            <p className="text-sm text-white/30">No cases yet — run a scan from Discovery.</p>
           ) : (
             <div className="space-y-3">
               {trending.map((c) => (
@@ -104,13 +161,13 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Opportunity Radar */}
+        {/* Opportunity Radar — how well each case fits YOUR channel's archetype */}
         <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4">
           <h3 className="text-xs uppercase text-white/40 mb-3 flex items-center gap-1.5">
             <Radar size={13} /> Opportunity Radar
           </h3>
           {!channel ? (
-            <p className="text-sm text-white/30">Connect a channel in Channel Matchmaker to see fit-scored opportunities.</p>
+            <p className="text-sm text-white/30">Connect a channel in Discovery to see fit-scored opportunities.</p>
           ) : loadingMatches ? (
             <div className="flex items-center gap-2 text-white/40 text-sm">
               <Loader2 size={14} className="animate-spin" /> Matching...
@@ -119,11 +176,14 @@ export default function Dashboard() {
             <p className="text-sm text-white/30">No matches yet — run a trending scan first.</p>
           ) : (
             <div className="space-y-3">
-              {matches.map((m) => (
+              {matches.map((m, i) => (
                 <div key={m.id} className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{m.name}</p>
-                    <p className="text-xs text-white/40 truncate">{m.recommended_angle || "—"}</p>
+                  <div className="min-w-0 flex items-center gap-2">
+                    <span className="text-[10px] font-semibold text-white/30 w-4 shrink-0">#{i + 1}</span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{m.name}</p>
+                      <p className="text-xs text-white/40 truncate">{m.recommended_angle || "—"}</p>
+                    </div>
                   </div>
                   <MiniGauge value={m.fitScore ?? 0} />
                 </div>

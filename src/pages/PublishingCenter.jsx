@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, ArrowRight, Wand2, Search, Image as ImageIcon } from "lucide-react";
+import { Loader2, ArrowRight, Wand2 } from "lucide-react";
 
 const STAGES = [
   { key: "idea", label: "Idea" },
@@ -62,7 +62,7 @@ export default function PublishingCenter() {
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8 space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Publishing Center</h1>
+        <h1 className="text-2xl font-semibold">Publish</h1>
         <p className="text-white/40 text-sm mt-1">Track saved cases from idea through to published</p>
       </div>
 
@@ -76,7 +76,7 @@ export default function PublishingCenter() {
         </div>
       ) : queue.length === 0 ? (
         <div className="text-center text-white/30 text-sm py-16">
-          No cases in your pipeline yet — save a case from Discover Cases to add it here.
+          No cases in your pipeline yet — save a case from Discovery to add it here.
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -96,17 +96,12 @@ export default function PublishingCenter() {
                   {stageLabel}
                 </span>
 
-                <div className="flex gap-2 text-xs text-white/50 pt-1 border-t border-white/10">
-                  <a href={`/angle-generator?caseId=${encodeURIComponent(item.id)}`} className="flex items-center gap-1 hover:text-cyan-400">
-                    <Wand2 size={11} /> Angles
-                  </a>
-                  <a href={`/case-intelligence?id=${encodeURIComponent(item.id)}&name=${encodeURIComponent(item.name)}`} className="flex items-center gap-1 hover:text-cyan-400">
-                    <Search size={11} /> Research
-                  </a>
-                  <a href={`/thumbnail-studio?caseName=${encodeURIComponent(item.name)}`} className="flex items-center gap-1 hover:text-cyan-400">
-                    <ImageIcon size={11} /> Thumbnail
-                  </a>
-                </div>
+                <a
+                  href={`/case-intelligence?id=${encodeURIComponent(item.id)}&name=${encodeURIComponent(item.name)}`}
+                  className="flex items-center gap-1.5 text-xs text-white/50 hover:text-cyan-400 pt-1 border-t border-white/10"
+                >
+                  <Wand2 size={11} /> Open Project (Research, Angles, SEO)
+                </a>
 
                 {next && (
                   <button
