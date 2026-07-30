@@ -9,6 +9,7 @@ import SeoStudio from "./pages/SeoStudio";
 import ThumbnailStudio from "./pages/ThumbnailStudio";
 import CompetitionAnalyzer from "./pages/CompetitionAnalyzer";
 import PublishingCenter from "./pages/PublishingCenter";
+import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -25,7 +26,7 @@ export default function App() {
             <Route path="/thumbnail-studio" element={<ThumbnailStudio />} />
             <Route path="/competition-analyzer" element={<CompetitionAnalyzer />} />
             <Route path="/publishing-center" element={<PublishingCenter />} />
-            {/* Channel Matchmaker was merged into Discovery — old links still work */}
+            <Route path="/settings" element={<Settings />} />
             <Route path="/channel-matchmaker" element={<Navigate to="/discover" replace />} />
           </Routes>
         </main>
