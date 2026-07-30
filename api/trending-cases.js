@@ -23,6 +23,33 @@ const FOCUS_ROTATION = [
   "unsolved mystery",
 ];
 
+async function buildQuery(focus) {
+  // If a channel is connected, steer the search toward what that channel
+  // actually covers (archetype + proven title triggers) instead of a
+  // generic sweep. An explicit focus (from the search box) is layered on
+  // top rather than replaced, so "UK true crime" + a courtroom archetype
+  // still narrows correctly.
+  const channelProfile = await kv.get("channel:profile:latest");
+
+  if (channelProfile) {
+    const triggerWords = (channelProfile.topTriggers || [])
+      .slice(0, 3)
+      .map((t) => t.trigger)
+      .join(" ");
+    const archetype =
+      channelProfile.archetype && channelProfile.archetype !== "unknown"
+        ? channelProfile.archetype.replace(/[&]/g, "").toLowerCase()
+        : "";
+
+    const base = [focus, archetype, triggerWords].filter(Boolean).join(" ");
+    return `${base} true crime case trending news this week arrest OR trial OR sentencing OR missing person`.trim();
+  }
+
+  return focus
+    ? `${focus} true crime case trending news this week`
+    : `true crime case going viral trending news this week arrest OR trial OR sentencing OR missing person`;
+}
+
 async function runScan(focus, res) {
   const tavilyKey = process.env.TAVILY_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
@@ -33,9 +60,7 @@ async function runScan(focus, res) {
   if (!tavilyKey) return res.status(500).json({ error: "TAVILY_API_KEY is not set on the server" });
   if (!groqKey) return res.status(500).json({ error: "GROQ_API_KEY is not set on the server" });
 
-  const query = focus
-    ? `${focus} true crime case trending news this week`
-    : `true crime case going viral trending news this week arrest OR trial OR sentencing OR missing person`;
+  const query = await buildQuery(focus);
 
   const searchContext = await tavilySearch({ apiKey: tavilyKey, query, maxResults: 10, includeSocial: true });
 

@@ -47,7 +47,13 @@ export default async function handler(req, res) {
       analyzedAt: new Date().toISOString(),
     };
 
+    // Keyed copy (per-channel history) plus a "latest" pointer — every
+    // other endpoint (channel-profile.js, channel-matches.js, and the
+    // scan's channel-aware query builder) reads "channel:profile:latest",
+    // so both writes are required or a freshly analyzed channel won't be
+    // found again after this request.
     await kv.set(`channel:profile:${channelId}`, profile);
+    await kv.set("channel:profile:latest", profile);
 
     return res.status(200).json(profile);
   } catch (err) {

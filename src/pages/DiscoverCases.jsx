@@ -344,7 +344,9 @@ export default function DiscoverCases() {
     setScanning(true);
     setError(null);
     try {
-      const res = await fetch("/api/trending-scan", {
+      // Was POSTing to /api/trending-scan, which no longer exists — the
+      // scan endpoint now lives on trending-cases.js behind ?scan=true.
+      const res = await fetch("/api/trending-cases?scan=true", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ focus: query.trim() || undefined }),
