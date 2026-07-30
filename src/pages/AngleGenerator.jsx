@@ -1,22 +1,31 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Wand2 } from "lucide-react";
 
 export default function AngleGenerator() {
   const [caseName, setCaseName] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [channelTitle, setChannelTitle] = useState(null);
   const [angles, setAngles] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/channel-profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.channelId) {
+          setChannelId(data.channelId);
+          setChannelTitle(data.channelTitle);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleGenerate() {
     if (!caseName.trim() || !channelId.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      // Ensure the case has been researched first (populates case:detail:<id>
-      // in KV under the id case-detail.js actually assigns) before asking
-      // angle-generator to read it — otherwise this 404s for a case that
-      // was already researched elsewhere under a different id.
       const detailParams = new URLSearchParams({ name: caseName });
       const detailRes = await fetch(`/api/case-detail?${detailParams.toString()}`);
       const detailData = await detailRes.json();
@@ -45,12 +54,18 @@ export default function AngleGenerator() {
       </div>
 
       <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 space-y-3">
-        <input
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          placeholder="Channel ID (from Channel Matchmaker)"
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
-        />
+        {channelTitle ? (
+          <div className="text-xs text-white/40 px-1">
+            Connected channel: <span className="text-cyan-400">{channelTitle}</span>
+          </div>
+        ) : (
+          <input
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            placeholder="Channel ID (connect one in Discovery to skip this)"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+          />
+        )}
         <input
           value={caseName}
           onChange={(e) => setCaseName(e.target.value)}

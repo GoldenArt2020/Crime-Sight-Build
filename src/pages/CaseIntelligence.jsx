@@ -13,6 +13,8 @@ const TABS = [
   { key: "overview", label: "Overview" },
   { key: "angles", label: "Angles" },
   { key: "seo", label: "SEO" },
+  { key: "thumbnail", label: "Thumbnail" },
+  { key: "competition", label: "Competition" },
 ];
 
 export default function CaseIntelligence() {
@@ -481,6 +483,31 @@ export default function CaseIntelligence() {
               )}
             </div>
           )}
+        </div>
+      )}
+      {/* THUMBNAIL TAB — links to standalone tool until fully merged */}
+      {activeTab === "thumbnail" && (
+        <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4">
+          <p className="text-sm text-white/60 mb-3">Open Thumbnail Studio for this case:</p>
+          <a
+            href={`/thumbnail-studio?caseName=${encodeURIComponent(caseData.name)}`}
+            className="inline-block px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-sm font-medium"
+          >
+            Open Thumbnail Studio
+          </a>
+        </div>
+      )}
+
+      {/* COMPETITION TAB — links to standalone tool until fully merged */}
+      {activeTab === "competition" && (
+        <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4">
+          <p className="text-sm text-white/60 mb-3">Open Competition Analyzer for this case:</p>
+          <a
+            href={`/competition-analyzer?caseName=${encodeURIComponent(caseData.name)}`}
+            className="inline-block px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-sm font-medium"
+          >
+            Open Competition Analyzer
+          </a>
         </div>
       )}
     </div>
