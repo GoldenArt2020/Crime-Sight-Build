@@ -1,16 +1,34 @@
-// api/channel-analyze.js
-// Analyzes a YouTube channel: pulls recent uploads, computes performance
-// stats, archetype, trigger words, and now — real day/hour publish-time
-// analysis bucketed from each video's actual publishedAt timestamp.
-// POST /api/channel-analyze
-// Body: { channelUrl: string }
+// api/channel.js
+// Merged: channel-analyze.js + channel-matches.js + channel-profile.js
+// POST   /api/channel?action=analyze   (was POST /api/channel-analyze)
+// GET    /api/channel?action=matches   (was GET  /api/channel-matches)
+// GET    /api/channel?action=profile   (was GET  /api/channel-profile)
+// DELETE /api/channel?action=profile   (was DELETE /api/channel-profile)
 
 import { kv } from "./_lib/kv.js";
+import { groqComplete, extractJson } from "./_lib/groq.js";
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 export default async function handler(req, res) {
+  const { action } = req.query;
+
+  switch (action) {
+    case "analyze":
+      return handleAnalyze(req, res);
+    case "matches":
+      return handleMatches(req, res);
+    case "profile":
+      return handleProfile(req, res);
+    default:
+      return res.status(400).json({ error: "Unknown or missing action. Use ?action=analyze|matches|profile" });
+  }
+}
+
+// ==================== ANALYZE ====================
+
+async function handleAnalyze(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method not allowed" });
@@ -43,29 +61,21 @@ export default async function handler(req, res) {
       archetype: stats.archetype,
       topTriggers: stats.topTriggers,
       topVideo: stats.topVideo,
-      publishTiming, // { bestDay, bestHour, heatmap: [...], sampleSize }
+      publishTiming,
       analyzedAt: new Date().toISOString(),
     };
 
-    // Keyed copy (per-channel history) plus a "latest" pointer — every
-    // other endpoint (channel-profile.js, channel-matches.js, and the
-    // scan's channel-aware query builder) reads "channel:profile:latest",
-    // so both writes are required or a freshly analyzed channel won't be
-    // found again after this request.
     await kv.set(`channel:profile:${channelId}`, profile);
     await kv.set("channel:profile:latest", profile);
 
     return res.status(200).json(profile);
   } catch (err) {
-    console.error("channel-analyze error:", err);
+    console.error("channel analyze error:", err);
     return res.status(500).json({ error: "Failed to analyze channel", detail: err.message });
   }
 }
 
-// ---- Resolution ----
-
 async function resolveChannelId(input) {
-  // Handles @handle URLs, /channel/UC... URLs, or a raw handle/id
   const handleMatch = input.match(/@([\w-]+)/);
   const channelIdMatch = input.match(/channel\/(UC[\w-]+)/);
 
@@ -103,8 +113,6 @@ async function fetchRecentVideos(channelId, max = 50) {
   const videosData = await videosResp.json();
   return videosData.items || [];
 }
-
-// ---- Stats ----
 
 function computeStats(videos) {
   if (videos.length === 0) {
@@ -157,14 +165,11 @@ function computeStats(videos) {
   };
 }
 
-// ---- publish day/hour timing analysis ----
-
 function computePublishTiming(videos) {
   if (videos.length === 0) {
     return { bestDay: null, bestHour: null, heatmap: [], sampleSize: 0 };
   }
 
-  // bucket[day][hour] = { totalViewsPerDay, count }
   const buckets = Array.from({ length: 7 }, () =>
     Array.from({ length: 24 }, () => ({ totalViewsPerDay: 0, count: 0 }))
   );
@@ -173,8 +178,8 @@ function computePublishTiming(videos) {
 
   for (const v of videos) {
     const published = new Date(v.snippet.publishedAt);
-    const day = published.getUTCDay(); // 0-6, Sunday-Saturday
-    const hour = published.getUTCHours(); // 0-23 UTC
+    const day = published.getUTCDay();
+    const hour = published.getUTCHours();
 
     const ageDays = Math.max(1, (now - published.getTime()) / (1000 * 60 * 60 * 24));
     const views = Number(v.statistics?.viewCount || 0);
@@ -184,8 +189,6 @@ function computePublishTiming(videos) {
     buckets[day][hour].count += 1;
   }
 
-  // Flatten into a heatmap of only buckets that actually have data,
-  // with an average viewsPerDay per (day, hour) combo.
   const heatmap = [];
   for (let day = 0; day < 7; day++) {
     for (let hour = 0; hour < 24; hour++) {
@@ -209,7 +212,7 @@ function computePublishTiming(videos) {
     bestDay: best?.day || null,
     bestHour: best?.hour ?? null,
     bestHourLabel: best ? formatHourUTC(best.hour) : null,
-    heatmap, // full breakdown, useful if you want a heatmap chart later
+    heatmap,
     sampleSize: videos.length,
     note: "Times are UTC, derived from publishedAt on this channel's own uploads — not a general audience benchmark.",
   };
@@ -220,8 +223,6 @@ function formatHourUTC(hour) {
   const displayHour = hour % 12 === 0 ? 12 : hour % 12;
   return `${displayHour}:00 ${period} UTC`;
 }
-
-// ---- Helpers ----
 
 function average(nums) {
   if (nums.length === 0) return 0;
@@ -254,3 +255,99 @@ function inferArchetype(titles) {
   if (/(serial|killer|murder)/.test(joined)) return "Serial Crime Deep-Diver";
   return "General True Crime";
 }
+
+// ==================== MATCHES ====================
+
+async function handleMatches(req, res) {
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const groqKey = process.env.GROQ_API_KEY;
+
+  try {
+    const channelProfile = await kv.get("channel:profile:latest");
+    if (!channelProfile) {
+      return res.status(404).json({ error: "No channel analyzed yet. POST to /api/channel?action=analyze first." });
+    }
+
+    const trending = (await kv.get("trending:latest")) || { cases: [] };
+    const cases = trending.cases || [];
+
+    if (!cases.length) {
+      return res.status(200).json({ channel: channelProfile.channelTitle, matches: [] });
+    }
+
+    const scored = cases
+      .map((c) => {
+        const { fitScore, matchedTriggers } = scoreFit(channelProfile, c);
+        return { case: c, fitScore, matchedTriggers };
+      })
+      .sort((a, b) => b.fitScore - a.fitScore);
+
+    const topN = scored.slice(0, 6);
+    const rest = scored.slice(6);
+
+    const enrichedTop = [];
+    for (const item of topN) {
+      let angle = {
+        why_it_matches: "Matches your channel's proven archetype.",
+        recommended_angle: `The story behind ${item.case.name}`,
+      };
+      if (groqKey) {
+        angle = await generateAngle(groqKey, channelProfile, item.case, item.matchedTriggers);
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      enrichedTop.push({
+        id: item.case.id || item.case.name,
+        name: item.case.name,
+        location: item.case.location,
+        date: item.case.date,
+        fitScore: item.fitScore,
+        coverage: item.case.coverage,
+        ...angle,
+      });
+    }
+
+    const restMinimal = rest.map((item) => ({
+      id: item.case.id || item.case.name,
+      name: item.case.name,
+      fitScore: item.fitScore,
+    }));
+
+    return res.status(200).json({
+      channel: channelProfile.channelTitle,
+      archetype: channelProfile.archetype,
+      analyzedAt: channelProfile.analyzedAt,
+      matches: [...enrichedTop, ...restMinimal],
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || "Channel matching failed" });
+  }
+}
+
+function scoreFit(channelProfile, caseItem) {
+  const text = `${caseItem.name} ${caseItem.summary || ""} ${caseItem.case_status || ""}`.toLowerCase();
+  const channelTriggerWords = channelProfile.topTriggers.map((t) => t.trigger);
+
+  let keywordScore = 0;
+  for (const trigger of channelTriggerWords) {
+    if (text.includes(trigger)) keywordScore += 1;
+  }
+  const normalizedKeywordScore = Math.min(40, keywordScore * 10);
+
+  const coverageScore =
+    caseItem.coverage === "unreleased" ? 30 : caseItem.coverage === "low_coverage" ? 20 : 10;
+
+  const caseQuality = caseItem.viral_score?.overall ?? 50;
+  const qualityScore = Math.min(30, Math.round((caseQuality / 100) * 30));
+
+  const fitScore = Math.min(100, normalizedKeywordScore + coverageScore + qualityScore);
+
+  return {
+    fitScore,
+    matchedTriggers: channelTriggerWords.filter((t) => text.includes(t)),
+  };
+}
+
+async
