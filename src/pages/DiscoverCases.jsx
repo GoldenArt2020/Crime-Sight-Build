@@ -383,6 +383,19 @@ export default function DiscoverCases() {
     }
   }
 
+  async function handleDisconnect() {
+    setError(null);
+    try {
+      const res = await fetch("/api/channel-profile", { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to disconnect channel");
+      setProfile(null);
+      setMatches([]);
+      setChannelUrl("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   async function fetchMatches() {
     setLoadingMatches(true);
     try {
@@ -495,7 +508,19 @@ export default function DiscoverCases() {
         </div>
       )}
 
-      {isConnected && <ChannelIdBadge channelId={profile.channelId} />}
+      {isConnected && (
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <ChannelIdBadge channelId={profile.channelId} />
+          </div>
+          <button
+            onClick={handleDisconnect}
+            className="shrink-0 text-xs font-medium px-4 py-3 rounded-xl border border-white/10 text-white/50 hover:text-red-300 hover:border-red-400/30 transition-colors"
+          >
+            Disconnect / Switch Channel
+          </button>
+        </div>
+      )}
 
       {isConnected && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
