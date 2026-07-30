@@ -1,15 +1,34 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, Image as ImageIcon, RefreshCw, Save, Check } from "lucide-react";
+
 
 export default function ThumbnailStudio() {
   const [caseName, setCaseName] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [channelTitle, setChannelTitle] = useState(null);
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const prefillCase = params.get("caseName");
+    if (prefillCase) setCaseName(prefillCase);
+
+    fetch("/api/channel-profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.channelId) {
+          setChannelId(data.channelId);
+          setChannelTitle(data.channelTitle);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
 
   async function handleGenerate() {
     if (!caseName.trim() || !channelId.trim()) return;
@@ -32,6 +51,7 @@ export default function ThumbnailStudio() {
     }
   }
 
+
   async function handleSave() {
     if (!brief) return;
     setSaving(true);
@@ -52,6 +72,7 @@ export default function ThumbnailStudio() {
     }
   }
 
+
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8 max-w-3xl mx-auto space-y-6">
       <div>
@@ -59,13 +80,20 @@ export default function ThumbnailStudio() {
         <p className="text-white/40 text-sm mt-1">Generate a creative brief for your next thumbnail</p>
       </div>
 
+
       <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 space-y-3">
-        <input
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          placeholder="Channel ID"
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
-        />
+        {channelTitle ? (
+          <div className="text-xs text-white/40 px-1">
+            Connected channel: <span className="text-cyan-400">{channelTitle}</span>
+          </div>
+        ) : (
+          <input
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            placeholder="Channel ID (connect one in Discovery to skip this)"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+          />
+        )}
         <input
           value={caseName}
           onChange={(e) => setCaseName(e.target.value)}
@@ -87,13 +115,14 @@ export default function ThumbnailStudio() {
         </button>
       </div>
 
+
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
       )}
 
+
       {brief && (
         <div className="space-y-4">
-          {/* Action bar */}
           <div className="flex gap-2">
             <button
               onClick={handleGenerate}
@@ -121,10 +150,12 @@ export default function ThumbnailStudio() {
             </button>
           </div>
 
+
           <div className="rounded-xl border border-white/10 bg-white/5 p-4">
             <h3 className="text-xs uppercase text-white/40 mb-1">Concept</h3>
             <p className="text-sm text-white/80">{brief.concept}</p>
           </div>
+
 
           <div className="grid sm:grid-cols-2 gap-4">
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -141,6 +172,7 @@ export default function ThumbnailStudio() {
             </div>
           </div>
 
+
           {brief.colorMood?.palette?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <h3 className="text-xs uppercase text-white/40 mb-2">Color & Mood — {brief.colorMood.mood}</h3>
@@ -152,6 +184,7 @@ export default function ThumbnailStudio() {
             </div>
           )}
 
+
           {brief.imageryDirection?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <h3 className="text-xs uppercase text-white/40 mb-2">Imagery Direction</h3>
@@ -160,6 +193,7 @@ export default function ThumbnailStudio() {
               </ul>
             </div>
           )}
+
 
           {brief.abTestVariant && (
             <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/5 p-4">

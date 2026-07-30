@@ -1,12 +1,27 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, Plus, X, Zap } from "lucide-react";
+
 
 export default function CompetitionAnalyzer() {
   const [channelId, setChannelId] = useState("");
+  const [channelTitle, setChannelTitle] = useState(null);
   const [competitorUrls, setCompetitorUrls] = useState([""]);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/channel-profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.channelId) {
+          setChannelId(data.channelId);
+          setChannelTitle(data.channelTitle);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
 
   function updateUrl(i, value) {
     setCompetitorUrls((prev) => prev.map((u, idx) => (idx === i ? value : u)));
@@ -19,9 +34,11 @@ export default function CompetitionAnalyzer() {
     setCompetitorUrls((prev) => prev.filter((_, idx) => idx !== i));
   }
 
+
   async function handleAnalyze() {
     const urls = competitorUrls.map((u) => u.trim()).filter(Boolean);
     if (!channelId.trim() || urls.length === 0) return;
+
 
     setLoading(true);
     setError(null);
@@ -41,6 +58,7 @@ export default function CompetitionAnalyzer() {
     }
   }
 
+
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8 max-w-4xl mx-auto space-y-6">
       <div>
@@ -48,13 +66,21 @@ export default function CompetitionAnalyzer() {
         <p className="text-white/40 text-sm mt-1">See where competitor channels are beating yours, and why</p>
       </div>
 
+
       <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 space-y-3">
-        <input
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          placeholder="Your Channel ID (from Channel Matchmaker)"
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
-        />
+        {channelTitle ? (
+          <div className="text-xs text-white/40 px-1">
+            Connected channel: <span className="text-cyan-400">{channelTitle}</span>
+          </div>
+        ) : (
+          <input
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            placeholder="Your Channel ID (connect one in Discovery to skip this)"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+          />
+        )}
+
 
         <div className="space-y-2">
           {competitorUrls.map((url, i) => (
@@ -85,6 +111,7 @@ export default function CompetitionAnalyzer() {
           )}
         </div>
 
+
         <button
           onClick={handleAnalyze}
           disabled={loading}
@@ -94,9 +121,11 @@ export default function CompetitionAnalyzer() {
         </button>
       </div>
 
+
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
       )}
+
 
       {result && (
         <div className="space-y-4">
@@ -104,6 +133,7 @@ export default function CompetitionAnalyzer() {
             <h3 className="text-xs uppercase text-white/40 mb-1">Positioning</h3>
             <p className="text-sm text-white/80">{result.positioning}</p>
           </div>
+
 
           <div className="rounded-xl border border-white/10 bg-white/5 p-4 overflow-x-auto">
             <h3 className="text-xs uppercase text-white/40 mb-3">Competitor Channels</h3>
@@ -133,6 +163,7 @@ export default function CompetitionAnalyzer() {
             </table>
           </div>
 
+
           {result.gaps?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
               <h3 className="text-xs uppercase text-white/40 mb-2">Content Gaps</h3>
@@ -147,6 +178,7 @@ export default function CompetitionAnalyzer() {
             </div>
           )}
 
+
           {result.opportunities?.length > 0 && (
             <div className="rounded-xl border border-fuchsia-400/20 bg-fuchsia-500/5 p-4">
               <h3 className="text-xs uppercase text-fuchsia-300 mb-2">Opportunities</h3>
@@ -160,6 +192,7 @@ export default function CompetitionAnalyzer() {
               </div>
             </div>
           )}
+
 
           {result.titlePatternDiff && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">

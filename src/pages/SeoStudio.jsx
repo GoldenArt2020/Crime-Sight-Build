@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Loader2, Search, CheckCircle2, AlertTriangle, XCircle, Clock, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
+
 
 const STATUS_ICON = {
   pass: <CheckCircle2 size={14} className="text-cyan-400 shrink-0" />,
@@ -7,27 +8,43 @@ const STATUS_ICON = {
   fail: <XCircle size={14} className="text-pink-400 shrink-0" />,
 };
 
+
 const RELEVANCE_STYLE = {
   high: "bg-cyan-500/15 text-cyan-300 border border-cyan-400/20",
   medium: "bg-white/10 text-white/70 border border-white/10",
   low: "bg-white/5 text-white/40 border border-white/5",
 };
 
+
 export default function SeoStudio() {
   const [title, setTitle] = useState("");
   const [channelId, setChannelId] = useState("");
+  const [channelTitle, setChannelTitle] = useState(null);
   const [caseName, setCaseName] = useState("");
   const [script, setScript] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // --- competitor scan state (separate from title-scoring state above) ---
+
   const [caseType, setCaseType] = useState("");
   const [competitorData, setCompetitorData] = useState(null);
   const [competitorLoading, setCompetitorLoading] = useState(false);
   const [competitorError, setCompetitorError] = useState(null);
   const [competitorExpanded, setCompetitorExpanded] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/channel-profile")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.channelId) {
+          setChannelId(data.channelId);
+          setChannelTitle(data.channelTitle);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
 
   async function handleScore() {
     if (!title.trim() || !channelId.trim()) return;
@@ -55,14 +72,12 @@ export default function SeoStudio() {
     }
   }
 
+
   async function handleCompetitorScan() {
     if (!caseType.trim()) return;
     setCompetitorLoading(true);
     setCompetitorError(null);
     try {
-      // Merged into competitor-analyzer.js (mode: "caseType") to stay under
-      // the Hobby plan's 12-serverless-function limit — the old standalone
-      // /api/competitor-scan endpoint was removed.
       const res = await fetch("/api/competitor-analyzer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -83,8 +98,10 @@ export default function SeoStudio() {
     }
   }
 
+
   const labelColor =
     result?.scoreLabel === "HIGH" ? "text-cyan-400" : result?.scoreLabel === "MEDIUM" ? "text-amber-300" : "text-pink-400";
+
 
   return (
     <div className="min-h-screen bg-slate-950 text-white p-8 max-w-3xl mx-auto space-y-6">
@@ -93,13 +110,20 @@ export default function SeoStudio() {
         <p className="text-white/40 text-sm mt-1">Score a title against your channel's own proven patterns</p>
       </div>
 
+
       <div className="rounded-xl border border-white/10 bg-white/5 backdrop-blur-md p-4 space-y-3">
-        <input
-          value={channelId}
-          onChange={(e) => setChannelId(e.target.value)}
-          placeholder="Channel ID (from Channel Matchmaker)"
-          className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
-        />
+        {channelTitle ? (
+          <div className="text-xs text-white/40 px-1">
+            Connected channel: <span className="text-cyan-400">{channelTitle}</span>
+          </div>
+        ) : (
+          <input
+            value={channelId}
+            onChange={(e) => setChannelId(e.target.value)}
+            placeholder="Channel ID (connect one in Discovery to skip this)"
+            className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
+          />
+        )}
         <input
           value={title}
           onChange={(e) => setTitle(e.target.value)}
@@ -107,6 +131,7 @@ export default function SeoStudio() {
           placeholder="Proposed video title"
           className="w-full bg-black/30 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none placeholder:text-white/30"
         />
+
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <input
@@ -139,6 +164,7 @@ export default function SeoStudio() {
           </div>
         </div>
 
+
         <div>
           <textarea
             value={script}
@@ -167,11 +193,13 @@ export default function SeoStudio() {
         </button>
       </div>
 
+
       {competitorError && (
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">
           {competitorError}
         </div>
       )}
+
 
       {competitorData && (
         <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
@@ -190,6 +218,7 @@ export default function SeoStudio() {
             </div>
             {competitorExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
+
 
           {competitorExpanded && (
             <div className="px-4 pb-4 space-y-4 border-t border-white/10 pt-3">
@@ -218,6 +247,7 @@ export default function SeoStudio() {
                     </div>
                   </div>
 
+
                   {competitorData.patterns?.titleStructurePatterns?.length > 0 && (
                     <div>
                       <h4 className="text-xs uppercase text-white/40 mb-1.5">Title Structure Patterns</h4>
@@ -232,6 +262,7 @@ export default function SeoStudio() {
                     </div>
                   )}
 
+
                   {competitorData.patterns?.commonHooks?.length > 0 && (
                     <div>
                       <h4 className="text-xs uppercase text-white/40 mb-1.5">Common Hooks</h4>
@@ -245,6 +276,7 @@ export default function SeoStudio() {
                     </div>
                   )}
 
+
                   {competitorData.patterns?.lengthGuidance && (
                     <p className="text-sm text-white/60">
                       <span className="text-white/40">Length: </span>
@@ -252,12 +284,14 @@ export default function SeoStudio() {
                     </p>
                   )}
 
+
                   {competitorData.patterns?.recommendation && (
                     <div className="rounded-lg bg-black/30 p-3 border border-white/5">
                       <h4 className="text-xs uppercase text-white/40 mb-1">Recommendation</h4>
                       <p className="text-sm text-white/80">{competitorData.patterns.recommendation}</p>
                     </div>
                   )}
+
 
                   {competitorData.topVideos?.length > 0 && (
                     <div>
@@ -289,9 +323,11 @@ export default function SeoStudio() {
         </div>
       )}
 
+
       {error && (
         <div className="rounded-lg border border-red-400/30 bg-red-400/10 text-red-300 text-sm px-4 py-2">{error}</div>
       )}
+
 
       {result && (
         <div className="space-y-4">
@@ -302,6 +338,7 @@ export default function SeoStudio() {
               <p className="text-xs text-white/40">{result.titleLength} characters</p>
             </div>
           </div>
+
 
           {result.reasons?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -315,6 +352,7 @@ export default function SeoStudio() {
               </div>
             </div>
           )}
+
 
           {result.alternatives?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -333,6 +371,7 @@ export default function SeoStudio() {
             </div>
           )}
 
+
           {result.description?.suggested && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4 space-y-3">
               <h3 className="text-xs uppercase text-white/40">Suggested Description</h3>
@@ -349,6 +388,7 @@ export default function SeoStudio() {
               )}
             </div>
           )}
+
 
           {result.tags?.length > 0 && (
             <div className="rounded-xl border border-white/10 bg-white/5 p-4">
@@ -367,6 +407,7 @@ export default function SeoStudio() {
             </div>
           )}
 
+
           {(result.categoryRecommendation || result.publishingOptimizer) && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {result.categoryRecommendation && (
@@ -376,6 +417,7 @@ export default function SeoStudio() {
                   <p className="text-xs text-white/50 mt-1">{result.categoryRecommendation.reasoning}</p>
                 </div>
               )}
+
 
               {result.publishingOptimizer && (
                 <div className="rounded-xl border border-white/10 bg-white/5 p-4">
