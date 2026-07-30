@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 
 import Dashboard from "./pages/Dashboard";
@@ -8,7 +8,6 @@ import AngleGenerator from "./pages/AngleGenerator";
 import SeoStudio from "./pages/SeoStudio";
 import ThumbnailStudio from "./pages/ThumbnailStudio";
 import CompetitionAnalyzer from "./pages/CompetitionAnalyzer";
-import ChannelMatchmaker from "./pages/ChannelMatchmaker";
 import PublishingCenter from "./pages/PublishingCenter";
 
 export default function App() {
@@ -25,8 +24,9 @@ export default function App() {
             <Route path="/seo-studio" element={<SeoStudio />} />
             <Route path="/thumbnail-studio" element={<ThumbnailStudio />} />
             <Route path="/competition-analyzer" element={<CompetitionAnalyzer />} />
-            <Route path="/channel-matchmaker" element={<ChannelMatchmaker />} />
             <Route path="/publishing-center" element={<PublishingCenter />} />
+            {/* Channel Matchmaker was merged into Discovery — old links still work */}
+            <Route path="/channel-matchmaker" element={<Navigate to="/discover" replace />} />
           </Routes>
         </main>
       </div>

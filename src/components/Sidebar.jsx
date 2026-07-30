@@ -2,27 +2,50 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutGrid,
   Compass,
-  FileSearch,
+  FolderKanban,
   Wand2,
   Search,
   Image as ImageIcon,
   BarChart3,
-  Link2,
   Send,
   Radar,
 } from "lucide-react";
 
-const NAV_ITEMS = [
+const MAIN_NAV_ITEMS = [
   { to: "/", label: "Dashboard", icon: LayoutGrid, end: true },
-  { to: "/discover", label: "Discover Cases", icon: Compass },
-  { to: "/case-intelligence", label: "Case Intelligence", icon: FileSearch },
+  { to: "/discover", label: "Discovery", icon: Compass },
+  { to: "/case-intelligence", label: "Projects", icon: FolderKanban },
+  { to: "/publishing-center", label: "Publish", icon: Send },
+];
+
+// Not yet folded into the per-project workspace tabs — kept reachable here
+// so nothing breaks while that merge happens in a later phase.
+const TOOL_NAV_ITEMS = [
   { to: "/angle-generator", label: "YouTube Angle Generator", icon: Wand2 },
   { to: "/seo-studio", label: "SEO Studio", icon: Search },
   { to: "/thumbnail-studio", label: "Thumbnail Studio", icon: ImageIcon },
   { to: "/competition-analyzer", label: "Competition Analyzer", icon: BarChart3 },
-  { to: "/channel-matchmaker", label: "Channel Matchmaker", icon: Link2 },
-  { to: "/publishing-center", label: "Publishing Center", icon: Send },
 ];
+
+function NavItem({ to, label, icon: Icon, end }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        [
+          "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+          isActive
+            ? "bg-white/10 text-white border border-cyan-400/30"
+            : "text-white/50 hover:text-white/80 hover:bg-white/5 border border-transparent",
+        ].join(" ")
+      }
+    >
+      <Icon size={16} className="shrink-0" />
+      <span className="truncate">{label}</span>
+    </NavLink>
+  );
+}
 
 export default function Sidebar() {
   return (
@@ -37,23 +60,15 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              [
-                "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
-                isActive
-                  ? "bg-white/10 text-white border border-cyan-400/30"
-                  : "text-white/50 hover:text-white/80 hover:bg-white/5 border border-transparent",
-              ].join(" ")
-            }
-          >
-            <Icon size={16} className="shrink-0" />
-            <span className="truncate">{label}</span>
-          </NavLink>
+        {MAIN_NAV_ITEMS.map((item) => (
+          <NavItem key={item.to} {...item} />
+        ))}
+
+        <div className="pt-4 pb-1 px-3">
+          <p className="text-[10px] uppercase tracking-wide text-white/25">Tools</p>
+        </div>
+        {TOOL_NAV_ITEMS.map((item) => (
+          <NavItem key={item.to} {...item} />
         ))}
       </nav>
 
