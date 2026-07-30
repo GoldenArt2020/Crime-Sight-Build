@@ -61,7 +61,7 @@ export default function Dashboard() {
   async function loadChannel() {
     setLoadingChannel(true);
     try {
-      const res = await fetch("/api/channel-snapshot");
+      const res = await fetch("/api/channel-profile");
       if (res.status === 404) {
         setChannel(null);
         setLoadingMatches(false);
